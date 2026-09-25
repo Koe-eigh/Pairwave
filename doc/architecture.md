@@ -132,25 +132,165 @@ VS Code Extension
 
 The first MVP should validate one core loop:
 
-> Select or point at code, speak an instruction, and receive a useful code change.
+> **Work on code, talk naturally to Pairwave, and receive context-aware guidance without leaving your coding flow.**
 
-The MVP does not need:
+The MVP focuses primarily on **Navigator Mode**.
 
-- a Pairwave backend server
-- sophisticated repository-wide context retrieval
-- multiple editor integrations
-- the complete two-cursor experience
-- team or synchronization features
+In Navigator Mode, Pairwave acts as an AI pair programmer that understands what the user is currently working on through voice, editor state, and repository context.
 
-The primary success criterion is whether using Pairwave feels useful enough that the developer naturally wants to use it repeatedly during real coding sessions.
+Pairwave may:
 
-## Open Questions
+- answer questions about the code
+- explain unfamiliar code or behavior
+- navigate to relevant code
+- investigate problems across the repository
+- suggest possible approaches
+- guide the user through an implementation
+- modify code when appropriate
 
-- Which realtime voice model should Pairwave use?
-- Which reasoning/coding agent should Pairwave use?
-- How should the context manager determine relevant repository context?
-- How should references such as "this function" or "that class" be resolved?
-- How much conversation history should be retained?
-- When should the agent ask for confirmation before editing code?
-- How should agent activity be represented in the editor?
-- How should API credentials be stored and managed locally?
+Code modification is therefore **an available capability, not the primary interaction**.
+
+A future **Driver Mode** can allow the agent to take a more active role in implementing changes, while Navigator Mode keeps the developer primarily in control of the coding process.
+
+The primary MVP success criterion is whether developers naturally want to keep Pairwave running and repeatedly talk to it during real coding sessions.
+
+### Context Prioritization
+
+Not all context signals have the same relevance.
+
+Pairwave should treat context selection as a **ranking problem** rather than sending all available context to the reasoning agent.
+
+For the initial implementation, context should roughly be prioritized as follows:
+
+1. **User selection** — the strongest indication of what the user is referring to
+2. **Cursor position and surrounding symbol** — the function, class, or expression the user is currently working with
+3. **Active file** — the immediate code surrounding the user's work
+4. **Git workspace changes** — modified files and diffs that indicate the user's current work
+5. **Open and recently viewed files** — weaker signals that may provide additional context
+6. **Repository-wide context** — additional symbols, references, files, and dependencies retrieved when necessary
+
+Higher-ranked context should be included or considered before lower-ranked context.
+
+Pairwave should begin with a small, high-confidence context bundle and allow the reasoning agent to progressively retrieve broader repository context when necessary.
+
+The goal is to provide the reasoning agent with **the most relevant context, not the most context**.
+
+### Reasoning / Coding Agent
+
+Pairwave should not be tightly coupled to a specific reasoning or coding agent.
+
+The coding agent is **user-configurable**, allowing Pairwave to work with different agents depending on the user's development environment and preferences.
+
+Pairwave should define a common abstraction between its context/orchestration layer and the underlying coding agent.
+
+For the MVP, **Codex will be the first supported coding agent**.
+
+This is an implementation choice for the MVP, not a permanent architectural dependency. The integration should be designed so that additional coding agents can be supported later without changing Pairwave's core architecture.
+
+```text
+Pairwave
+    |
+    v
+Coding Agent Interface
+    |
+    +-- Codex        <- MVP
+    +-- Other Agent  <- Future
+```
+
+### Realtime Voice Model
+
+Pairwave should not be tightly coupled to a specific realtime voice provider.
+
+The realtime voice model acts as a **thin conversational layer**. Its primary responsibilities are:
+
+- receiving the user's speech
+- maintaining a natural low-latency conversation
+- handling interruptions and turn-taking
+- understanding the user's immediate intent
+- invoking Pairwave tools when necessary
+- communicating results from the reasoning/coding agent back to the user
+
+Complex code reasoning should remain the responsibility of the reasoning/coding agent rather than the realtime voice model.
+
+For the MVP, **Gemini 3.8 Live** will be the first supported realtime voice model.
+
+Gemini 3.8 Live is selected for the MVP because its realtime interaction and non-blocking function-calling model fit Pairwave's architecture, particularly the ability to delegate longer-running work to the coding agent while maintaining the conversational interaction.
+
+As with the coding agent, this is an MVP implementation choice rather than a permanent architectural dependency.
+
+Pairwave should define a common voice-provider abstraction so that additional realtime voice models can be supported later.
+
+```text
+Pairwave
+    |
+    v
+Voice Provider Interface
+    |
+    +-- Gemini 3.8 Live     <- MVP
+    +-- OpenAI Realtime     <- Future
+    +-- Other Provider      <- Future
+```
+
+The voice provider and coding agent should remain independent choices:
+
+```text
+Realtime Voice Model
+Gemini 3.8 Live
+        |
+        v
+     Pairwave
+ Context / Orchestration
+        |
+        v
+ Coding Agent Interface
+        |
+        v
+      Codex
+```
+
+For the MVP:
+
+- **Realtime voice model:** Gemini 3.8 Live
+- **Reasoning/coding agent:** Codex
+- **Credentials:** user-provided API keys stored through VS Code SecretStorage
+- **Pairwave backend:** none required
+- **Architecture:** both voice and coding-agent providers remain replaceable
+
+### API Credentials
+
+For the MVP, Pairwave uses a **Bring Your Own Key (BYOK)** model.
+
+Users provide their own API credentials for external AI services. Pairwave does not require its own backend for storing or distributing API credentials.
+
+Credentials must be stored locally using **VS Code SecretStorage**.
+
+Pairwave must not store API keys in:
+
+- repository files
+- `.env` files
+- VS Code settings
+- extension configuration
+- other plaintext storage
+
+VS Code SecretStorage provides the abstraction for securely storing secrets and relies on the platform's underlying credential-storage mechanisms where available. Pairwave should use this API rather than directly integrating with platform-specific facilities such as macOS Keychain.
+
+```text
+User API Key
+     |
+     v
+VS Code SecretStorage
+     |
+     v
+OS Credential Storage
+     |
+     v
+Pairwave
+     |
+     v
+AI Provider
+```
+
+This allows the MVP to remain **local-first and backend-free** while avoiding plaintext credential storage.
+
+If Pairwave later manages credentials on behalf of users, the architecture should move toward a backend-managed credential model with short-lived client credentials rather than distributing long-lived service credentials to clients.
+
