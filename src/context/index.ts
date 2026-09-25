@@ -101,9 +101,10 @@ function boundItems(items: readonly ContextItem[], maxChars: number): { items: r
 }
 
 function fitContext(context: EditorContext, maxChars: number): EditorContext {
-  let result = context;
+  let result = syncStructuredFields(context);
+  const protectedKinds = new Set<ContextItem["kind"]>(["selection", "cursor"]);
   for (let index = result.items.length - 1; index >= 0 && JSON.stringify(result).length > maxChars; index -= 1) {
-    result = removeContextKind(result, result.items[index].kind);
+    if (!protectedKinds.has(result.items[index].kind)) result = removeContextKind(result, result.items[index].kind);
   }
   for (const item of result.items) {
     if (!item.content || JSON.stringify(result).length <= maxChars) continue;
@@ -117,7 +118,36 @@ function fitContext(context: EditorContext, maxChars: number): EditorContext {
     }
     result = updateContextContent(result, item.kind, item.content.slice(0, low));
   }
-  return JSON.stringify(result).length <= maxChars ? result : { ...result, items: [], truncated: true, selection: undefined, cursor: undefined, surroundingSymbol: undefined, surroundingCode: undefined, activeFile: undefined, diagnostics: [], openFiles: [] };
+  return JSON.stringify(result).length <= maxChars ? result : minimalContext(context.items, maxChars);
+}
+
+function minimalContext(items: readonly ContextItem[], maxChars: number): EditorContext {
+  const base: EditorContext = { openFiles: [], diagnostics: [], items: [], truncated: true };
+  for (const item of items) {
+    const candidate = { ...base, items: [item] };
+    if (JSON.stringify(candidate).length <= maxChars) return candidate;
+    if (!item.content) continue;
+    let low = 0;
+    let high = item.content.length;
+    while (low < high) {
+      const length = Math.ceil((low + high) / 2);
+      const shortened = { ...candidate, items: [{ ...item, content: item.content.slice(0, length) }] };
+      if (JSON.stringify(shortened).length <= maxChars) low = length;
+      else high = length - 1;
+    }
+    if (low > 0) return { ...base, items: [{ ...item, content: item.content.slice(0, low) }] };
+  }
+  return base;
+}
+
+function syncStructuredFields(context: EditorContext): EditorContext {
+  const content = new Map(context.items.map((item) => [item.kind, item.content]));
+  return {
+    ...context,
+    selection: context.selection && content.has("selection") ? { ...context.selection, text: content.get("selection") ?? "" } : context.selection,
+    surroundingCode: context.surroundingCode && content.has("active-file") ? { ...context.surroundingCode, text: content.get("active-file") ?? "" } : context.surroundingCode,
+    openFiles: content.has("open-files") ? (content.get("open-files") ?? "").split("\n") : context.openFiles,
+  };
 }
 
 function removeContextKind(context: EditorContext, kind: ContextItem["kind"]): EditorContext {
