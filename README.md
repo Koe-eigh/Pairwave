@@ -1,4 +1,4 @@
-# PairWave
+# Pairwave
 
 Pair programming with AI agents through natural voice.
 
