@@ -29,7 +29,7 @@
     "compile": "npm run build",
     "lint": "npm run typecheck",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run typecheck",
+    "test": "npm run build && node --test test/context.test.js",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {

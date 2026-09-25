@@ -46,4 +46,6 @@ npm test
 npm run lint
 ```
 
+`npm test` builds the extension and runs the editor-context unit tests.
+
 Use the `Run Pairwave Extension` launch configuration in VS Code to open an Extension Development Host. Run `Pairwave: Start` from the Command Palette to verify activation.
