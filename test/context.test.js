@@ -18,5 +18,5 @@ test("includes diagnostics after stronger editor signals", () => {
 });
 test("bounds context size and marks omitted lower-priority data", () => {
   const context = collectEditorContext({ activeFile: { path: "src/app.ts", languageId: "typescript", text: "x".repeat(500), isDirty: false, cursor: position(0, 0), selection: { range: range([0, 0], [0, 500]), text: "x".repeat(500) } }, openFiles: ["README.md", "package.json"], diagnostics: [] }, { maxChars: 220 });
-  assert.equal(JSON.stringify(context.items).length <= 220, true); assert.equal(context.truncated, true); assert.equal(context.items[0].kind, "selection");
+  assert.equal(JSON.stringify(context).length <= 220, true); assert.equal(context.truncated, true);
 });

@@ -54,7 +54,7 @@ export function collectEditorContext(snapshot: EditorSnapshot, options: ContextO
 
   const bounded = boundItems(items, maxChars);
   const included = new Set(bounded.items.map((item) => item.kind));
-  return {
+  return fitContext({
     activeFile: active && included.has("active-file") ? { path: active.path, languageId: active.languageId, isDirty: active.isDirty } : undefined,
     cursor: active && included.has("cursor") ? { path: active.path, position: active.cursor } : undefined,
     selection: active?.selection && included.has("selection") ? { path: active.path, range: active.selection.range, text: active.selection.text } : undefined,
@@ -62,7 +62,7 @@ export function collectEditorContext(snapshot: EditorSnapshot, options: ContextO
     surroundingCode: active && surroundingCode && included.has("active-file") ? { path: active.path, range: surroundingCode.range, text: surroundingCode.text } : undefined,
     openFiles: included.has("open-files") ? [...snapshot.openFiles] : [], diagnostics: included.has("diagnostics") ? [...snapshot.diagnostics] : [],
     items: bounded.items, truncated: bounded.truncated,
-  };
+  }, maxChars);
 }
 
 function getSurroundingCode(active: NonNullable<EditorSnapshot["activeFile"]>, linesAround: number): { range: TextRange; text: string } {
@@ -81,9 +81,63 @@ function boundItems(items: readonly ContextItem[], maxChars: number): { items: r
     const serialized = JSON.stringify(item);
     if (serialized.length <= remaining) { result.push(item); size += serialized.length + 1; continue; }
     const fixed = JSON.stringify({ ...item, content: "" }).length;
-    const available = Math.max(0, remaining - fixed - 2);
-    if (item.content && available > 0) result.push({ ...item, content: item.content.slice(0, available) });
+    let low = 0;
+    let high = Math.max(0, remaining - fixed - 2);
+    while (low < high) {
+      const candidate = Math.ceil((low + high) / 2);
+      const shortened = { ...item, content: item.content?.slice(0, candidate) };
+      if (JSON.stringify([...result, shortened]).length <= maxChars) low = candidate;
+      else high = candidate - 1;
+    }
+    if (item.content && low > 0) result.push({ ...item, content: item.content.slice(0, low) });
     truncated = true; break;
   }
   return { items: result, truncated };
+}
+
+function fitContext(context: EditorContext, maxChars: number): EditorContext {
+  let result = context;
+  for (let index = result.items.length - 1; index >= 0 && JSON.stringify(result).length > maxChars; index -= 1) {
+    result = removeContextKind(result, result.items[index].kind);
+  }
+  for (const item of result.items) {
+    if (!item.content || JSON.stringify(result).length <= maxChars) continue;
+    let low = 0;
+    let high = item.content.length;
+    while (low < high) {
+      const candidate = Math.ceil((low + high) / 2);
+      const shortened = updateContextContent(result, item.kind, item.content.slice(0, candidate));
+      if (JSON.stringify(shortened).length <= maxChars) low = candidate;
+      else high = candidate - 1;
+    }
+    result = updateContextContent(result, item.kind, item.content.slice(0, low));
+  }
+  return JSON.stringify(result).length <= maxChars ? result : { ...result, items: [], truncated: true, selection: undefined, cursor: undefined, surroundingSymbol: undefined, surroundingCode: undefined, activeFile: undefined, diagnostics: [], openFiles: [] };
+}
+
+function removeContextKind(context: EditorContext, kind: ContextItem["kind"]): EditorContext {
+  return {
+    ...context,
+    items: context.items.filter((item) => item.kind !== kind),
+    activeFile: kind === "active-file" ? undefined : context.activeFile,
+    cursor: kind === "cursor" ? undefined : context.cursor,
+    selection: kind === "selection" ? undefined : context.selection,
+    surroundingSymbol: kind === "symbol" ? undefined : context.surroundingSymbol,
+    surroundingCode: kind === "active-file" ? undefined : context.surroundingCode,
+    diagnostics: kind === "diagnostics" ? [] : context.diagnostics,
+    openFiles: kind === "open-files" ? [] : context.openFiles,
+    truncated: true,
+  };
+}
+
+function updateContextContent(context: EditorContext, kind: ContextItem["kind"], content: string): EditorContext {
+  return {
+    ...context,
+    items: context.items.map((item) => item.kind === kind ? { ...item, content } : item),
+    selection: kind === "selection" && context.selection ? { ...context.selection, text: content } : context.selection,
+    surroundingCode: kind === "active-file" && context.surroundingCode ? { ...context.surroundingCode, text: content } : context.surroundingCode,
+    diagnostics: kind === "diagnostics" ? context.diagnostics.map((diagnostic) => ({ ...diagnostic, message: content })) : context.diagnostics,
+    openFiles: kind === "open-files" ? content.split("\n") : context.openFiles,
+    truncated: true,
+  };
 }
