@@ -1,0 +1,40 @@
+{
+  "name": "pairwave",
+  "displayName": "Pairwave",
+  "description": "Pair programming with AI agents through natural voice.",
+  "version": "0.0.1",
+  "private": true,
+  "publisher": "pairwave",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:pairwave.start"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pairwave.start",
+        "title": "Pairwave: Start"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "compile": "npm run build",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run typecheck",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.0"
+  }
+}

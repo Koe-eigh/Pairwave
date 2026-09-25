@@ -34,3 +34,16 @@ Your cursor represents where you're working. The agent has its own cursor, allow
 You can continue coding while the agent investigates a problem elsewhere, then have it explain what it found, suggest options, or make changes.
 
 Voice is the communication layer. Context connects your work to the agent's reasoning. The two cursors let you work side-by-side.
+
+## Local Development
+
+Pairwave is initialized as a minimal VS Code extension with no runtime dependencies.
+
+```sh
+npm install
+npm run build
+npm test
+npm run lint
+```
+
+Use the `Run Pairwave Extension` launch configuration in VS Code to open an Extension Development Host. Run `Pairwave: Start` from the Command Palette to verify activation.
