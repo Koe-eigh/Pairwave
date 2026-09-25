@@ -38,6 +38,13 @@ test("returns a safe empty context when no editor data is available", () => {
   });
 });
 
+test("rejects a maxChars budget smaller than the context envelope", () => {
+  assert.throws(
+    () => collectEditorContext({ openFiles: [], diagnostics: [] }, { maxChars: 1 }),
+    RangeError,
+  );
+});
+
 test("retains workspace file and diagnostic data when within the budget", () => {
   const context = collectEditorContext({
     activeFile: { path: "src/app.ts", languageId: "typescript", text: "const answer = 42;", isDirty: false, cursor: position(0, 5) },

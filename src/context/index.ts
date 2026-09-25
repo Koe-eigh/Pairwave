@@ -33,10 +33,15 @@ export interface ContextOptions { readonly maxChars?: number; readonly surroundi
 
 const DEFAULT_MAX_CHARS = 12_000;
 const DEFAULT_SURROUNDING_LINES = 20;
+const MIN_CONTEXT_CHARS = JSON.stringify({ openFiles: [], diagnostics: [], items: [], truncated: false }).length;
 
 /** Collect and rank editor context without depending on a particular editor API. */
 export function collectEditorContext(snapshot: EditorSnapshot, options: ContextOptions = {}): EditorContext {
-  const maxChars = Math.max(1, options.maxChars ?? DEFAULT_MAX_CHARS);
+  const requestedMaxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  if (requestedMaxChars < MIN_CONTEXT_CHARS) {
+    throw new RangeError(`maxChars must be at least ${MIN_CONTEXT_CHARS}`);
+  }
+  const maxChars = requestedMaxChars;
   const surroundingLines = Math.max(0, options.surroundingLines ?? DEFAULT_SURROUNDING_LINES);
   const active = snapshot.activeFile;
   const items: ContextItem[] = [];
