@@ -1,4 +1,5 @@
 node_modules/
 dist/
+.takt/
 *.tsbuildinfo
 .DS_Store
