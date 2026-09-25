@@ -20,3 +20,30 @@ test("bounds context size and marks omitted lower-priority data", () => {
   const context = collectEditorContext({ activeFile: { path: "src/app.ts", languageId: "typescript", text: "x".repeat(500), isDirty: false, cursor: position(0, 0), selection: { range: range([0, 0], [0, 500]), text: "x".repeat(500) } }, openFiles: ["README.md", "package.json"], diagnostics: [] }, { maxChars: 220 });
   assert.equal(JSON.stringify(context).length <= 220, true); assert.equal(context.truncated, true);
 });
+
+test("counts escaped characters when enforcing the serialized size limit", () => {
+  const escapedText = '"\\\n'.repeat(300);
+  const context = collectEditorContext({
+    activeFile: { path: "src/app.ts", languageId: "typescript", text: escapedText, isDirty: false, cursor: position(0, 0), selection: { range: range([0, 0], [0, escapedText.length]), text: escapedText } },
+    openFiles: [], diagnostics: [],
+  }, { maxChars: 500 });
+  assert.equal(JSON.stringify(context).length <= 500, true);
+  assert.equal(context.truncated, true);
+});
+
+test("returns a safe empty context when no editor data is available", () => {
+  assert.deepEqual(collectEditorContext({ openFiles: [], diagnostics: [] }), {
+    activeFile: undefined, cursor: undefined, selection: undefined, surroundingSymbol: undefined, surroundingCode: undefined,
+    openFiles: [], diagnostics: [], items: [], truncated: false,
+  });
+});
+
+test("retains workspace file and diagnostic data when within the budget", () => {
+  const context = collectEditorContext({
+    activeFile: { path: "src/app.ts", languageId: "typescript", text: "const answer = 42;", isDirty: false, cursor: position(0, 5) },
+    openFiles: ["src/app.ts", "README.md"],
+    diagnostics: [{ message: "Example warning", severity: "warning", range: range([0, 0], [0, 5]) }],
+  });
+  assert.deepEqual(context.openFiles, ["src/app.ts", "README.md"]);
+  assert.equal(context.diagnostics[0].message, "Example warning");
+});
