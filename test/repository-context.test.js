@@ -75,10 +75,11 @@ test("reports staged and unstaged changes with bounded diff content", async () =
     diff: "diff --git a/src/app.ts b/src/app.ts\n" + "+x".repeat(300),
   });
 
-  const context = await provider.collectInitial({ maxChars: 180 });
+  const context = await provider.collectInitial({ maxChars: 300 });
 
   assert.deepEqual(context.changedFiles, ["src/app.ts", "README.md"]);
-  assert.equal(JSON.stringify(context).length <= 180, true);
+  assert.equal(context.diff.includes("diff --git a/src/app.ts b/src/app.ts"), true);
+  assert.equal(JSON.stringify(context).length <= 300, true);
   assert.equal(context.degraded, false);
 });
 
@@ -408,6 +409,7 @@ test("uses native Git discovery for staged, unstaged, permitted, and ignored fil
     assert.equal(initial.changedFiles.includes("src/app.ts"), true);
     assert.equal(initial.changedFiles.includes("README.md"), true);
     assert.equal(initial.changedFiles.includes("debug.log"), true);
+    assert.equal(initial.diff.includes("export const app = false;"), true);
     assert.equal(files.some((file) => file.path === "debug.log"), true);
     assert.equal(files.some((file) => file.path === "local.secret"), false);
     assert.equal(ignoredFile, undefined);
