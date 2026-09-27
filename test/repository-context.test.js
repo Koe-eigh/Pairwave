@@ -338,6 +338,20 @@ test("keeps editor signals ahead of Git, open files, and repository items within
   assert.equal(JSON.stringify(context).length <= 900, true);
 });
 
+test("keeps changed-file context eligible when diagnostics exceed the budget", () => {
+  const context = collectEditorContext({
+    openFiles: [],
+    diagnostics: [{ message: "diagnostic ".repeat(100), severity: "error", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }],
+  }, {
+    maxChars: 220,
+    repositoryItems: [{ kind: "git-changes", priority: 4, content: "src/app.ts" }],
+  });
+
+  assert.equal(context.items.some((item) => item.kind === "git-changes"), true);
+  assert.equal(context.items.some((item) => item.kind === "diagnostics"), false);
+  assert.equal(JSON.stringify(context).length <= 220, true);
+});
+
 test("uses native Git discovery for staged, unstaged, permitted, and ignored files", async () => {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-repository-"));
   const runGit = (...args) => execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8" });
