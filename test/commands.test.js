@@ -38,6 +38,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     if (parent && parent.filename === require.resolve("../dist/extension/commands") && request === "../context/vscode") {
       return {
         readVscodeWorkspaceRoot: (requestedPath) => requestedPath?.startsWith("folder-b/") ? "/workspace-b" : workspaceRoot,
+        readVscodeWorkspacePath: (requestedPath) => requestedPath.startsWith("folder-b/") ? requestedPath.slice("folder-b/".length) : requestedPath,
         readVscodeEditorSnapshot: async () => ({ openFiles: [], diagnostics: [] }),
       };
     }
@@ -67,6 +68,11 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     assert.deepEqual(await commands.get("pairwave.retrieveRepositoryContext")(firstRequest), {
       root: "/workspace-b",
       request: firstRequest,
+    });
+    const folderRequest = { kind: "file", path: "folder-b/src/app.ts" };
+    assert.deepEqual(await commands.get("pairwave.retrieveRepositoryContext")(folderRequest), {
+      root: "/workspace-b",
+      request: { kind: "file", path: "src/app.ts" },
     });
     assert.equal(await commands.get("pairwave.retrieveRepositoryContext")(), undefined);
     assert.deepEqual(providers.map(({ root }) => root), ["/workspace-a", "/workspace-b"]);

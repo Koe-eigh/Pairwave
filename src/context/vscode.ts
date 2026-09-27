@@ -49,6 +49,18 @@ export function readVscodeWorkspaceRoot(requestedPath?: string): string | undefi
   return activeFolder?.uri.fsPath ?? folders[0].uri.fsPath;
 }
 
+/** Remove a multi-root workspace folder prefix before repository retrieval. */
+export function readVscodeWorkspacePath(requestedPath: string): string {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const normalizedPath = requestedPath.replaceAll("\\", "/");
+  const folder = folders.find((candidate) => {
+    const folderName = candidate.name.replaceAll("\\", "/");
+    return normalizedPath.startsWith(`${folderName}/`);
+  });
+  if (!folder) return requestedPath;
+  return normalizedPath.slice(folder.name.replaceAll("\\", "/").length + 1);
+}
+
 function workspacePath(uri: vscode.Uri): string | undefined {
   const folder = vscode.workspace.getWorkspaceFolder(uri);
   if (!folder) return undefined;

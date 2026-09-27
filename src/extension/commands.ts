@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { collectEditorContext } from "../context";
 import { createRepositoryContextProvider, type RepositoryProvider, type RepositoryRequest } from "../context/repository";
-import { readVscodeEditorSnapshot, readVscodeWorkspaceRoot } from "../context/vscode";
+import { readVscodeEditorSnapshot, readVscodeWorkspacePath, readVscodeWorkspaceRoot } from "../context/vscode";
 
 /** Register Pairwave's extension-host commands. */
 export function registerCommands(context: vscode.ExtensionContext): void {
@@ -32,7 +32,13 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage("Pairwave repository retrieval requires a valid request.");
         return undefined;
       }
-      return getRepository("path" in request ? request.path : undefined)?.retrieve(request);
+      const requestedPath = "path" in request ? request.path : undefined;
+      const provider = getRepository(requestedPath);
+      if (!provider) return undefined;
+      if ("path" in request && typeof request.path === "string") {
+        return provider.retrieve({ ...request, path: readVscodeWorkspacePath(request.path) });
+      }
+      return provider.retrieve(request);
     },
   );
 

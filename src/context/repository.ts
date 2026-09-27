@@ -108,7 +108,7 @@ async function retrieveRepositoryContext(
 ): Promise<unknown> {
   if (request.kind === "modified-files") {
     try {
-      return (await git.listChangedFiles()).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath));
+      return fitAggregate((await git.listChangedFiles()).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath)), contentLimit);
     } catch {
       return [];
     }
@@ -132,7 +132,7 @@ async function retrieveRepositoryContext(
         const content = await readBoundedFile(fileSystem, path, contentLimit);
         if (content !== undefined) files.push({ path, content });
       }
-      return files;
+      return fitAggregate(files, contentLimit);
     } catch {
       return [];
     }
@@ -154,10 +154,20 @@ async function retrieveRepositoryContext(
   }
   if (!readIndex) return [];
   try {
-    return await readIndex(request.path);
+    return fitAggregate(await readIndex(request.path), contentLimit);
   } catch {
     return [];
   }
+}
+
+function fitAggregate<T>(items: readonly T[], contentLimit: number): T[] {
+  const bounded: T[] = [];
+  for (const item of items) {
+    const candidate = [...bounded, item];
+    if (JSON.stringify(candidate).length > contentLimit) break;
+    bounded.push(item);
+  }
+  return bounded;
 }
 
 async function readBoundedFile(fileSystem: RepositoryFileSystemPort, path: string, contentLimit: number): Promise<string | undefined> {

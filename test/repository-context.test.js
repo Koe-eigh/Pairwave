@@ -7,38 +7,42 @@ const { execFileSync } = require("node:child_process");
 const { createRepositoryContextProvider } = require("../dist/context/repository");
 const { collectEditorContext } = require("../dist/context");
 
-function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, diffFailure } = {}) {
+function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, diffFailure, referencesAdapter = true, contentLimit } = {}) {
   const calls = [];
+  const git = {
+    listChangedFiles: async () => {
+      calls.push("listChangedFiles");
+      if (failure) throw failure;
+      return changed;
+    },
+    readDiff: async () => {
+      calls.push("readDiff");
+      if (diffFailure || failure) throw diffFailure || failure;
+      return diff;
+    },
+    readFileDiff: async () => {
+      calls.push("readFileDiff");
+      if (failure) throw failure;
+      return diff;
+    },
+    isIgnored: async (filePath) => ignored.includes(filePath),
+    listFiles: async () => {
+      calls.push("listFiles");
+      if (failure) throw failure;
+      return Object.keys(files).filter((path) => !ignored.includes(path));
+    },
+  };
+  if (referencesAdapter) {
+    git.readReferences = async (filePath) => {
+      calls.push(`readReferences:${filePath}`);
+      if (failure) throw failure;
+      return references;
+    };
+  }
   const provider = createRepositoryContextProvider({
     workspaceRoot: "/workspace",
-    git: {
-      listChangedFiles: async () => {
-        calls.push("listChangedFiles");
-        if (failure) throw failure;
-        return changed;
-      },
-      readDiff: async () => {
-        calls.push("readDiff");
-        if (diffFailure || failure) throw diffFailure || failure;
-        return diff;
-      },
-      readFileDiff: async () => {
-        calls.push("readFileDiff");
-        if (failure) throw failure;
-        return diff;
-      },
-      isIgnored: async (filePath) => ignored.includes(filePath),
-      readReferences: async (filePath) => {
-        calls.push(`readReferences:${filePath}`);
-        if (failure) throw failure;
-        return references;
-      },
-      listFiles: async () => {
-        calls.push("listFiles");
-        if (failure) throw failure;
-        return Object.keys(files).filter((path) => !ignored.includes(path));
-      },
-    },
+    git,
+    contentLimit,
     fileSystem: {
       readFile: async (path) => {
         calls.push(`readFile:${path}`);
@@ -149,6 +153,38 @@ test("retrieves modified files and diffs only when explicitly requested", async 
   assert.deepEqual(calls, ["listChangedFiles", "readFileDiff"]);
 });
 
+test("bounds file and diff retrieval to the configured content limit", async () => {
+  const { provider } = createProvider({
+    files: { "src/app.ts": "x".repeat(100) },
+    diff: "d".repeat(100),
+    contentLimit: 32,
+  });
+
+  const file = await provider.retrieve({ kind: "file", path: "src/app.ts" });
+  const diff = await provider.retrieve({ kind: "diff" });
+
+  assert.equal(file.content.length, 32);
+  assert.equal(diff.length, 32);
+});
+
+test("bounds aggregate progressive retrieval results", async () => {
+  const { provider } = createProvider({
+    files: { "a.ts": "a", "b.ts": "b", "c.ts": "c" },
+    changed: ["a.ts", "b.ts", "c.ts"],
+    references: ["a.ts:1:reference", "b.ts:2:reference", "c.ts:3:reference"],
+    contentLimit: 32,
+  });
+
+  for (const request of [
+    { kind: "files" },
+    { kind: "modified-files" },
+    { kind: "references", path: "src/app.ts" },
+  ]) {
+    const result = await provider.retrieve(request);
+    assert.equal(JSON.stringify(result).length <= 32, true, request.kind);
+  }
+});
+
 test("rejects traversal and absolute paths before reading repository files", async () => {
   const { calls, provider } = createProvider({ files: { "src/app.ts": "app" } });
 
@@ -209,6 +245,7 @@ test("degrades independently for missing indexes and unreadable discovered files
   const { provider } = createProvider({
     files: { "src/app.ts": "app", "src/broken.ts": "broken" },
     unreadable: ["src/broken.ts"],
+    referencesAdapter: false,
   });
 
   const references = await provider.retrieve({ kind: "references", path: "src/app.ts" });
