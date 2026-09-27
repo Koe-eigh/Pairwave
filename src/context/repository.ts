@@ -207,11 +207,16 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
   const runGit = async (...args: string[]): Promise<string> => (await execFile("git", ["-C", workspaceRoot, ...args], { maxBuffer: 2_000_000 })).stdout;
   return {
     listChangedFiles: async () => {
-      const [tracked, untracked] = await Promise.all([
+      const results = await Promise.allSettled([
         runGit("diff", "--name-only", "HEAD"),
         runGit("ls-files", "--others", "--exclude-standard"),
       ]);
-      return uniqueLines(`${tracked}\n${untracked}`);
+      const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (firstFailure && results.every((result) => result.status === "rejected")) throw firstFailure.reason;
+      return uniqueLines(results
+        .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+        .map((result) => result.value)
+        .join("\n"));
     },
     readDiff: () => runGit("diff", "HEAD", "--no-ext-diff", "--unified=20"),
     readFileDiff: (path) => runGit("diff", "HEAD", "--no-ext-diff", "--unified=20", "--", path),

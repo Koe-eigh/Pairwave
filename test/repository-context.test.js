@@ -284,6 +284,24 @@ test("uses native Git discovery for staged, unstaged, permitted, and ignored fil
   }
 });
 
+test("retains untracked files in an unborn repository", async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-unborn-"));
+  const runGit = (...args) => execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8" });
+
+  try {
+    runGit("init", "--quiet");
+    fs.mkdirSync(path.join(workspaceRoot, "src"));
+    fs.writeFileSync(path.join(workspaceRoot, "src/app.ts"), "export const app = true;\n");
+
+    const provider = createRepositoryContextProvider({ workspaceRoot });
+    const initial = await provider.collectInitial({ maxChars: 2_000 });
+
+    assert.equal(initial.changedFiles.includes("src/app.ts"), true);
+  } finally {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test("resolves native relative imports when retrieving references", async () => {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-references-"));
   const runGit = (...args) => execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8" });
