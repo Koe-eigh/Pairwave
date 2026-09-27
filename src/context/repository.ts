@@ -1,6 +1,6 @@
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat, open, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -10,8 +10,8 @@ const MIN_INITIAL_CONTEXT_CHARS = JSON.stringify({ changedFiles: [], diff: "", f
 
 export interface RepositoryGitPort {
   readonly listChangedFiles: () => Promise<readonly string[]>;
-  readonly readDiff: () => Promise<string>;
-  readonly readFileDiff?: (path: string) => Promise<string>;
+  readonly readDiff: (maxBytes?: number) => Promise<string>;
+  readonly readFileDiff?: (path: string, maxBytes?: number) => Promise<string>;
   readonly isIgnored?: (path: string) => Promise<boolean>;
   readonly listFiles: () => Promise<readonly string[]>;
   readonly readSymbols?: (path: string) => Promise<readonly string[]>;
@@ -81,7 +81,7 @@ async function collectInitial(git: RepositoryGitPort, workspaceRoot: string, opt
     degraded = true;
   }
   try {
-    diff = await git.readDiff();
+    diff = await git.readDiff(options.maxChars);
   } catch {
     degraded = true;
   }
@@ -118,8 +118,8 @@ async function retrieveRepositoryContext(
     try {
       if (request.path && !isSafeRepositoryPath(workspaceRoot, request.path)) return "";
       const diff = request.path && git.readFileDiff
-        ? await git.readFileDiff(request.path)
-        : await git.readDiff();
+        ? await git.readFileDiff(request.path, contentLimit)
+        : await git.readDiff(contentLimit);
       return diff.slice(0, contentLimit);
     } catch {
       return "";
@@ -143,12 +143,12 @@ async function retrieveRepositoryContext(
   }
   if (request.kind === "file") {
     if (!isSafeRepositoryPath(workspaceRoot, request.path)) return undefined;
-    if (git.isIgnored && await git.isIgnored(request.path)) return undefined;
+    if (!(await isRetrievablePath(git, request.path))) return undefined;
     const content = await readBoundedFile(fileSystem, request.path, contentLimit);
     return content === undefined ? undefined : { path: request.path, content };
   }
   if (!isSafeRepositoryPath(workspaceRoot, request.path)) return [];
-  if (git.isIgnored && await git.isIgnored(request.path)) return [];
+  if (!(await isRetrievablePath(git, request.path))) return [];
   const readIndex = request.kind === "symbols" ? git.readSymbols
     : request.kind === "references" ? git.readReferences
       : git.readDependencies;
@@ -220,6 +220,28 @@ function isSafeRepositoryPath(workspaceRoot: string, candidate: string): boolean
 
 function createGitPort(workspaceRoot: string): RepositoryGitPort {
   const runGit = async (...args: string[]): Promise<string> => (await execFile("git", ["-C", workspaceRoot, ...args], { maxBuffer: 2_000_000 })).stdout;
+  const runGitBounded = (maxBytes: number, ...args: string[]): Promise<string> => new Promise((resolve, reject) => {
+    const child = spawn("git", ["-C", workspaceRoot, ...args], { stdio: ["ignore", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let truncated = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (bytes < maxBytes) {
+        const remaining = maxBytes - bytes;
+        chunks.push(chunk.subarray(0, remaining));
+        bytes += Math.min(chunk.length, remaining);
+      }
+      if (bytes >= maxBytes && !truncated) {
+        truncated = true;
+        child.kill();
+      }
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (truncated || code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
+      else reject(new Error(`git exited with code ${code ?? "unknown"}`));
+    });
+  });
   return {
     listChangedFiles: async () => {
       const results = await Promise.allSettled([
@@ -233,14 +255,19 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
         .map((result) => result.value)
         .join("\n"));
     },
-    readDiff: () => runGit("diff", "HEAD", "--no-ext-diff", "--unified=20"),
-    readFileDiff: (path) => runGit("diff", "HEAD", "--no-ext-diff", "--unified=20", "--", path),
+    readDiff: (maxBytes) => maxBytes === undefined
+      ? runGit("diff", "HEAD", "--no-ext-diff", "--unified=20")
+      : runGitBounded(maxBytes, "diff", "HEAD", "--no-ext-diff", "--unified=20"),
+    readFileDiff: (path, maxBytes) => maxBytes === undefined
+      ? runGit("diff", "HEAD", "--no-ext-diff", "--unified=20", "--", path)
+      : runGitBounded(maxBytes, "diff", "HEAD", "--no-ext-diff", "--unified=20", "--", path),
     isIgnored: async (path) => {
       try {
         await execFile("git", ["-C", workspaceRoot, "check-ignore", "--quiet", "--", path]);
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        if (isExitCode(error, 1)) return false;
+        throw error;
       }
     },
     listFiles: () => runGit("ls-files", "--cached", "--others", "--exclude-standard").then(uniqueLines),
@@ -275,16 +302,12 @@ function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
         throw new Error("repository path escapes workspace");
       }
       await rejectSymlinkComponents(root, relative);
-      if (maxBytes === undefined) {
-        const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
-        try {
-          return (await handle.readFile("utf8")).toString();
-        } finally {
-          await handle.close();
-        }
-      }
       const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
+        await assertOpenFileContained(handle, root, candidate);
+        if (maxBytes === undefined) {
+          return (await handle.readFile("utf8")).toString();
+        }
         const buffer = Buffer.alloc(Math.max(0, maxBytes));
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
         return buffer.subarray(0, bytesRead).toString("utf8");
@@ -293,6 +316,40 @@ function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
       }
     },
   };
+}
+
+async function isRetrievablePath(git: RepositoryGitPort, filePath: string): Promise<boolean> {
+  if (!git.isIgnored) return true;
+  try {
+    return !(await git.isIgnored(filePath));
+  } catch {
+    return false;
+  }
+}
+
+function isExitCode(error: unknown, code: number | string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+async function assertOpenFileContained(handle: Awaited<ReturnType<typeof open>>, root: string, candidate: string): Promise<void> {
+  assertContained(root, await realpath(candidate));
+  const descriptorPath = process.platform === "linux" ? `/proc/self/fd/${handle.fd}`
+    : process.platform === "darwin" ? `/dev/fd/${handle.fd}` : undefined;
+  if (!descriptorPath) return;
+  try {
+    const openedPath = await realpath(await readlink(descriptorPath));
+    assertContained(root, openedPath);
+  } catch (error) {
+    if (isExitCode(error, "ENOENT") || isExitCode(error, "EINVAL")) return;
+    throw error;
+  }
+}
+
+function assertContained(root: string, candidate: string): void {
+  const relative = path.relative(root, candidate);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("opened repository file escapes workspace");
+  }
 }
 
 async function rejectSymlinkComponents(root: string, relative: string): Promise<void> {

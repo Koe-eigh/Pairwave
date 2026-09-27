@@ -60,8 +60,8 @@ export function collectEditorContext(snapshot: EditorSnapshot, options: ContextO
   }
   const surroundingCode = active ? getSurroundingCode(active, surroundingLines) : undefined;
   if (active && surroundingCode) items.push({ kind: "active-file", priority: 3, path: active.path, content: surroundingCode.text });
-  if (options.repositoryItems) items.push(...options.repositoryItems);
   if (snapshot.diagnostics.length > 0) items.push({ kind: "diagnostics", priority: 4, content: snapshot.diagnostics.map((d) => d.message).join("\n") });
+  if (options.repositoryItems) items.push(...options.repositoryItems);
   if (snapshot.openFiles.length > 0) items.push({ kind: "open-files", priority: 5, content: snapshot.openFiles.join("\n") });
 
   const bounded = boundItems(items, maxChars);

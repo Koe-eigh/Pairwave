@@ -7,7 +7,7 @@ const { execFileSync } = require("node:child_process");
 const { createRepositoryContextProvider } = require("../dist/context/repository");
 const { collectEditorContext } = require("../dist/context");
 
-function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, referencesAdapter = true, contentLimit } = {}) {
+function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, ignoreFailure, referencesAdapter = true, contentLimit } = {}) {
   const calls = [];
   const git = {
     listChangedFiles: async () => {
@@ -25,7 +25,10 @@ function createProvider({ files = {}, ignored = [], changed = [], diff = "", ref
       if (failure) throw failure;
       return diff;
     },
-    isIgnored: async (filePath) => ignored.includes(filePath),
+    isIgnored: async (filePath) => {
+      if (ignoreFailure) throw ignoreFailure;
+      return ignored.includes(filePath);
+    },
     listFiles: async () => {
       calls.push("listFiles");
       if (failure) throw failure;
@@ -138,6 +141,18 @@ test("excludes ignored files from symbol and dependency fallback retrieval", asy
   assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), []);
 });
 
+test("fails closed when ignore status cannot be determined", async () => {
+  const { calls, provider } = createProvider({
+    files: { "local.secret": "export const secret = true;" },
+    ignoreFailure: new Error("git check-ignore unavailable"),
+    referencesAdapter: false,
+  });
+
+  assert.equal(await provider.retrieve({ kind: "file", path: "local.secret" }), undefined);
+  assert.deepEqual(await provider.retrieve({ kind: "dependencies", path: "local.secret" }), []);
+  assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), []);
+});
+
 test("degrades to editor context when Git is unavailable", async () => {
   const { provider } = createProvider({ failure: new Error("not a git repository") });
 
@@ -188,6 +203,27 @@ test("bounds file and diff retrieval to the configured content limit", async () 
 
   assert.equal(file.content.length, 32);
   assert.equal(diff.length, 32);
+});
+
+test("passes diff limits to the Git acquisition boundary", async () => {
+  const limits = [];
+  const provider = createRepositoryContextProvider({
+    workspaceRoot: "/workspace",
+    contentLimit: 32,
+    git: {
+      listChangedFiles: async () => [],
+      readDiff: async (maxBytes) => { limits.push(maxBytes); return "d".repeat(100); },
+      readFileDiff: async (filePath, maxBytes) => { limits.push([filePath, maxBytes]); return "d".repeat(100); },
+      listFiles: async () => [],
+    },
+    fileSystem: { readFile: async () => "" },
+  });
+
+  await provider.collectInitial({ maxChars: 100 });
+  await provider.retrieve({ kind: "diff" });
+  await provider.retrieve({ kind: "diff", path: "src/app.ts" });
+
+  assert.deepEqual(limits, [100, 32, ["src/app.ts", 32]]);
 });
 
 test("stops file retrieval after the aggregate limit is reached", async () => {
@@ -363,18 +399,17 @@ test("keeps editor signals ahead of Git, open files, and repository items within
   assert.equal(JSON.stringify(context).length <= 900, true);
 });
 
-test("keeps changed-file context eligible when diagnostics exceed the budget", () => {
+test("keeps diagnostics ahead of equal-priority repository items", () => {
   const context = collectEditorContext({
     openFiles: [],
-    diagnostics: [{ message: "diagnostic ".repeat(100), severity: "error", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }],
+    diagnostics: [{ message: "diagnostic", severity: "error", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }],
   }, {
-    maxChars: 220,
+    maxChars: 350,
     repositoryItems: [{ kind: "git-changes", priority: 4, content: "src/app.ts" }],
   });
 
-  assert.equal(context.items.some((item) => item.kind === "git-changes"), true);
-  assert.equal(context.items.some((item) => item.kind === "diagnostics"), false);
-  assert.equal(JSON.stringify(context).length <= 220, true);
+  assert.equal(context.items.findIndex((item) => item.kind === "diagnostics") < context.items.findIndex((item) => item.kind === "git-changes"), true);
+  assert.equal(JSON.stringify(context).length <= 350, true);
 });
 
 test("uses native Git discovery for staged, unstaged, permitted, and ignored files", async () => {
@@ -402,7 +437,7 @@ test("uses native Git discovery for staged, unstaged, permitted, and ignored fil
     write("local.secret", "ignored\n");
 
     const provider = createRepositoryContextProvider({ workspaceRoot });
-    const initial = await provider.collectInitial({ maxChars: 2_000 });
+    const initial = await provider.collectInitial({ maxChars: 8_000 });
     const files = await provider.retrieve({ kind: "files" });
     const ignoredFile = await provider.retrieve({ kind: "file", path: "local.secret" });
 
