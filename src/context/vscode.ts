@@ -30,6 +30,11 @@ export async function readVscodeEditorSnapshot(): Promise<EditorSnapshot> {
   return { activeFile, openFiles, diagnostics };
 }
 
+/** Resolve the workspace root at the VS Code adapter boundary. */
+export function readVscodeWorkspaceRoot(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
 function workspacePath(uri: vscode.Uri): string | undefined {
   const folder = vscode.workspace.getWorkspaceFolder(uri);
   if (!folder) return undefined;
