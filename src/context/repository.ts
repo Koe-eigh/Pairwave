@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { open, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -130,9 +131,12 @@ async function retrieveRepositoryContext(
       const files: Array<{ path: string; content: string }> = [];
       for (const path of paths) {
         const content = await readBoundedFile(fileSystem, path, contentLimit);
-        if (content !== undefined) files.push({ path, content });
+        if (content === undefined) continue;
+        const next = { path, content };
+        if (!fitsAggregate(files, next, contentLimit)) break;
+        files.push(next);
       }
-      return fitAggregate(files, contentLimit);
+      return files;
     } catch {
       return [];
     }
@@ -144,6 +148,7 @@ async function retrieveRepositoryContext(
     return content === undefined ? undefined : { path: request.path, content };
   }
   if (!isSafeRepositoryPath(workspaceRoot, request.path)) return [];
+  if (git.isIgnored && await git.isIgnored(request.path)) return [];
   const readIndex = request.kind === "symbols" ? git.readSymbols
     : request.kind === "references" ? git.readReferences
       : git.readDependencies;
@@ -168,6 +173,10 @@ function fitAggregate<T>(items: readonly T[], contentLimit: number): T[] {
     bounded.push(item);
   }
   return bounded;
+}
+
+function fitsAggregate<T>(items: readonly T[], item: T, contentLimit: number): boolean {
+  return JSON.stringify([...items, item]).length <= contentLimit;
 }
 
 async function readBoundedFile(fileSystem: RepositoryFileSystemPort, path: string, contentLimit: number): Promise<string | undefined> {
@@ -265,15 +274,16 @@ function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
       if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
         throw new Error("repository path escapes workspace");
       }
+      await rejectSymlinkComponents(root, relative);
       if (maxBytes === undefined) {
-        const handle = await open(candidate, "r");
+        const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
         try {
           return (await handle.readFile("utf8")).toString();
         } finally {
           await handle.close();
         }
       }
-      const handle = await open(candidate, "r");
+      const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const buffer = Buffer.alloc(Math.max(0, maxBytes));
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
@@ -283,6 +293,14 @@ function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
       }
     },
   };
+}
+
+async function rejectSymlinkComponents(root: string, relative: string): Promise<void> {
+  let current = root;
+  for (const component of relative.split(path.sep)) {
+    current = path.join(current, component);
+    if ((await lstat(current)).isSymbolicLink()) throw new Error("repository path contains a symlink");
+  }
 }
 
 function uniqueLines(value: string): string[] {

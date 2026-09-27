@@ -125,6 +125,18 @@ test("excludes ignored files while allowing explicit retrieval of permitted file
   assert.deepEqual(requested, { path: "src/app.ts", content: "app" });
 });
 
+test("excludes ignored files from symbol and dependency fallback retrieval", async () => {
+  const { calls, provider } = createProvider({
+    files: { "local.secret": "export const secret = true;" },
+    ignored: ["local.secret"],
+    referencesAdapter: false,
+  });
+
+  assert.deepEqual(await provider.retrieve({ kind: "symbols", path: "local.secret" }), []);
+  assert.deepEqual(await provider.retrieve({ kind: "dependencies", path: "local.secret" }), []);
+  assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), []);
+});
+
 test("degrades to editor context when Git is unavailable", async () => {
   const { provider } = createProvider({ failure: new Error("not a git repository") });
 
@@ -175,6 +187,18 @@ test("bounds file and diff retrieval to the configured content limit", async () 
 
   assert.equal(file.content.length, 32);
   assert.equal(diff.length, 32);
+});
+
+test("stops file retrieval after the aggregate limit is reached", async () => {
+  const { calls, provider } = createProvider({
+    files: { "a.ts": "a".repeat(20), "b.ts": "b".repeat(20), "c.ts": "c".repeat(20) },
+    contentLimit: 70,
+  });
+
+  const files = await provider.retrieve({ kind: "files" });
+
+  assert.equal(files.length, 1);
+  assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), ["readFile:a.ts", "readFile:b.ts"]);
 });
 
 test("passes the content limit to the filesystem read boundary", async () => {
