@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { readFile as readFileCallback } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -10,6 +11,7 @@ export interface RepositoryGitPort {
   readonly listChangedFiles: () => Promise<readonly string[]>;
   readonly readDiff: () => Promise<string>;
   readonly readFileDiff?: (path: string) => Promise<string>;
+  readonly isIgnored?: (path: string) => Promise<boolean>;
   readonly listFiles: () => Promise<readonly string[]>;
   readonly readSymbols?: (path: string) => Promise<readonly string[]>;
   readonly readReferences?: (path: string) => Promise<readonly string[]>;
@@ -60,12 +62,12 @@ export function createRepositoryContextProvider(options: RepositoryProviderOptio
   const fileSystem = options.fileSystem ?? createFileSystemPort(options.workspaceRoot);
 
   return {
-    collectInitial: (request) => collectInitial(git, request),
-    retrieve: (request) => retrieveRepositoryContext(git, fileSystem, request, contentLimit),
+    collectInitial: (request) => collectInitial(git, options.workspaceRoot, request),
+    retrieve: (request) => retrieveRepositoryContext(git, fileSystem, options.workspaceRoot, request, contentLimit),
   };
 }
 
-async function collectInitial(git: RepositoryGitPort, options: { readonly maxChars: number }): Promise<RepositoryContext> {
+async function collectInitial(git: RepositoryGitPort, workspaceRoot: string, options: { readonly maxChars: number }): Promise<RepositoryContext> {
   if (options.maxChars < MIN_INITIAL_CONTEXT_CHARS) {
     throw new RangeError(`maxChars must be at least ${MIN_INITIAL_CONTEXT_CHARS}`);
   }
@@ -82,7 +84,7 @@ async function collectInitial(git: RepositoryGitPort, options: { readonly maxCha
   } catch {
     degraded = true;
   }
-  const normalizedChangedFiles = changedFiles.filter(isRelativePath);
+  const normalizedChangedFiles = changedFiles.filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath));
   const items: RepositoryContextItem[] = [];
   if (normalizedChangedFiles.length > 0) {
     items.push({ kind: "git-changes", priority: 4, content: normalizedChangedFiles.join("\n") });
@@ -100,19 +102,20 @@ async function collectInitial(git: RepositoryGitPort, options: { readonly maxCha
 async function retrieveRepositoryContext(
   git: RepositoryGitPort,
   fileSystem: RepositoryFileSystemPort,
+  workspaceRoot: string,
   request: RepositoryRequest,
   contentLimit: number,
 ): Promise<unknown> {
   if (request.kind === "modified-files") {
     try {
-      return (await git.listChangedFiles()).filter(isRelativePath);
+      return (await git.listChangedFiles()).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath));
     } catch {
       return [];
     }
   }
   if (request.kind === "diff") {
     try {
-      if (request.path && !isRelativePath(request.path)) return "";
+      if (request.path && !isSafeRepositoryPath(workspaceRoot, request.path)) return "";
       const diff = request.path && git.readFileDiff
         ? await git.readFileDiff(request.path)
         : await git.readDiff();
@@ -123,7 +126,7 @@ async function retrieveRepositoryContext(
   }
   if (request.kind === "files") {
     try {
-      const paths = (await git.listFiles()).filter(isRelativePath);
+      const paths = (await git.listFiles()).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath));
       const files: Array<{ path: string; content: string }> = [];
       for (const path of paths) {
         const content = await readBoundedFile(fileSystem, path, contentLimit);
@@ -135,11 +138,12 @@ async function retrieveRepositoryContext(
     }
   }
   if (request.kind === "file") {
-    if (!isRelativePath(request.path)) return undefined;
+    if (!isSafeRepositoryPath(workspaceRoot, request.path)) return undefined;
+    if (git.isIgnored && await git.isIgnored(request.path)) return undefined;
     const content = await readBoundedFile(fileSystem, request.path, contentLimit);
     return content === undefined ? undefined : { path: request.path, content };
   }
-  if (!isRelativePath(request.path)) return [];
+  if (!isSafeRepositoryPath(workspaceRoot, request.path)) return [];
   const readIndex = request.kind === "symbols" ? git.readSymbols
     : request.kind === "references" ? git.readReferences
       : git.readDependencies;
@@ -188,8 +192,15 @@ function emptyRepositoryContext(degraded: boolean): RepositoryContext {
   return { changedFiles: [], diff: "", files: [], items: [], degraded };
 }
 
-function isRelativePath(path: string): boolean {
-  return path.length > 0 && !path.startsWith("/") && path !== "." && path !== ".." && !path.split("/").includes("..");
+function isSafeRepositoryPath(workspaceRoot: string, candidate: string): boolean {
+  if (!candidate || candidate === "." || candidate.includes("\0")) return false;
+  if (path.isAbsolute(candidate) || path.win32.isAbsolute(candidate) || candidate.startsWith("\\")) return false;
+  const normalizedCandidate = candidate.replaceAll("\\", "/");
+  if (normalizedCandidate.split("/").includes("..")) return false;
+  const root = path.resolve(workspaceRoot);
+  const resolved = path.resolve(root, candidate);
+  const relative = path.relative(root, resolved);
+  return relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function createGitPort(workspaceRoot: string): RepositoryGitPort {
@@ -204,13 +215,37 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
     },
     readDiff: () => runGit("diff", "HEAD", "--no-ext-diff", "--unified=20"),
     readFileDiff: (path) => runGit("diff", "HEAD", "--no-ext-diff", "--unified=20", "--", path),
+    isIgnored: async (path) => {
+      try {
+        await execFile("git", ["-C", workspaceRoot, "check-ignore", "--quiet", "--", path]);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     listFiles: () => runGit("ls-files", "--cached", "--others", "--exclude-standard").then(uniqueLines),
-    readReferences: (path) => runGit("grep", "-n", "--fixed-strings", path, "--", ".").then(uniqueLines),
+    readReferences: async (requestedPath) => {
+      try {
+        const output = await runGit("grep", "-n", "-E", "(from[[:space:]]+|import[[:space:]]*\\(|require[[:space:]]*\\()[[:space:]]*['\"][^'\"]+['\"]", "--", ".");
+        const requested = path.posix.normalize(requestedPath);
+        return uniqueLines(output.split(/\r?\n/).filter((line) => {
+          const match = line.match(/^(.+?):\d+:(.*)$/);
+          if (!match) return false;
+          const specifier = match[2].match(/(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/)?.[1];
+          if (!specifier?.startsWith(".")) return false;
+          const sourcePath = path.posix.dirname(match[1]);
+          const resolved = path.posix.normalize(path.posix.join(sourcePath, specifier));
+          return [resolved, `${resolved}.ts`, `${resolved}.tsx`, `${resolved}.js`, `${resolved}.jsx`].includes(requested);
+        }).join("\n"));
+      } catch {
+        return [];
+      }
+    },
   };
 }
 
 function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
-  return { readFile: (path) => readFileCallback(`${workspaceRoot}/${path}`, "utf8") };
+  return { readFile: (filePath) => readFileCallback(path.resolve(workspaceRoot, filePath), "utf8") };
 }
 
 function uniqueLines(value: string): string[] {

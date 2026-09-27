@@ -27,6 +27,7 @@ function createProvider({ files = {}, ignored = [], changed = [], diff = "", ref
         if (failure) throw failure;
         return diff;
       },
+      isIgnored: async (filePath) => ignored.includes(filePath),
       readReferences: async (filePath) => {
         calls.push(`readReferences:${filePath}`);
         if (failure) throw failure;
@@ -236,12 +237,41 @@ test("uses native Git discovery for staged, unstaged, permitted, and ignored fil
     const provider = createRepositoryContextProvider({ workspaceRoot });
     const initial = await provider.collectInitial({ maxChars: 2_000 });
     const files = await provider.retrieve({ kind: "files" });
+    const ignoredFile = await provider.retrieve({ kind: "file", path: "local.secret" });
 
     assert.equal(initial.changedFiles.includes("src/app.ts"), true);
     assert.equal(initial.changedFiles.includes("README.md"), true);
     assert.equal(initial.changedFiles.includes("debug.log"), true);
     assert.equal(files.some((file) => file.path === "debug.log"), true);
     assert.equal(files.some((file) => file.path === "local.secret"), false);
+    assert.equal(ignoredFile, undefined);
+  } finally {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolves native relative imports when retrieving references", async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-references-"));
+  const runGit = (...args) => execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8" });
+  const write = (relativePath, content) => {
+    const target = path.join(workspaceRoot, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  };
+
+  try {
+    runGit("init", "--quiet");
+    runGit("config", "user.email", "pairwave@example.test");
+    runGit("config", "user.name", "Pairwave Test");
+    write("src/app.ts", "import { util } from './util';\nexport const app = util;\n");
+    write("src/util.ts", "export const util = true;\n");
+    runGit("add", ".");
+    runGit("commit", "--quiet", "-m", "initial");
+
+    const provider = createRepositoryContextProvider({ workspaceRoot });
+    const references = await provider.retrieve({ kind: "references", path: "src/util.ts" });
+
+    assert.deepEqual(references, ["src/app.ts:1:import { util } from './util';"]);
   } finally {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }
