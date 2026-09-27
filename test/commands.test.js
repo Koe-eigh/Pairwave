@@ -16,7 +16,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
         return disposable;
       },
     },
-    window: { showInformationMessage: async () => undefined },
+    window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined },
   };
   const repositoryModule = require("../dist/context/repository");
   const originalCreateProvider = repositoryModule.createRepositoryContextProvider;
@@ -37,7 +37,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     if (request === "vscode") return vscodeMock;
     if (parent && parent.filename === require.resolve("../dist/extension/commands") && request === "../context/vscode") {
       return {
-        readVscodeWorkspaceRoot: () => workspaceRoot,
+        readVscodeWorkspaceRoot: (requestedPath) => requestedPath?.startsWith("folder-b/") ? "/workspace-b" : workspaceRoot,
         readVscodeEditorSnapshot: async () => ({ openFiles: [], diagnostics: [] }),
       };
     }
@@ -68,6 +68,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       root: "/workspace-b",
       request: firstRequest,
     });
+    assert.equal(await commands.get("pairwave.retrieveRepositoryContext")(), undefined);
     assert.deepEqual(providers.map(({ root }) => root), ["/workspace-a", "/workspace-b"]);
 
     for (const subscription of context.subscriptions) subscription.dispose();
@@ -76,6 +77,37 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     repositoryModule.createRepositoryContextProvider = originalCreateProvider;
     Module._load = originalLoad;
     delete require.cache[require.resolve("../dist/extension/commands")];
+    delete require.cache[vscodeAdapterPath];
+  }
+});
+
+test("resolves a multi-root workspace from the requested folder or active editor", () => {
+  const folders = [
+    { name: "folder-a", uri: { fsPath: "/workspace-a" } },
+    { name: "folder-b", uri: { fsPath: "/workspace-b" } },
+  ];
+  const vscodeMock = {
+    workspace: {
+      workspaceFolders: folders,
+      getWorkspaceFolder: (uri) => uri.fsPath.startsWith("/workspace-b/") ? folders[1] : folders[0],
+    },
+    window: { activeTextEditor: { document: { uri: { fsPath: "/workspace-b/src/app.ts" } } } },
+  };
+  const originalLoad = Module._load;
+  const vscodeAdapterPath = require.resolve("../dist/context/vscode");
+  Module._load = function(request, parent, isMain) {
+    if (request === "vscode") return vscodeMock;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  try {
+    delete require.cache[vscodeAdapterPath];
+    const { readVscodeWorkspaceRoot } = require("../dist/context/vscode");
+    assert.equal(readVscodeWorkspaceRoot(), "/workspace-b");
+    assert.equal(readVscodeWorkspaceRoot("folder-a/src/app.ts"), "/workspace-a");
+    assert.equal(readVscodeWorkspaceRoot("folder-b/src/app.ts"), "/workspace-b");
+  } finally {
+    Module._load = originalLoad;
     delete require.cache[vscodeAdapterPath];
   }
 });

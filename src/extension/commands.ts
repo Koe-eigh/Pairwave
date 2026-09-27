@@ -7,8 +7,8 @@ import { readVscodeEditorSnapshot, readVscodeWorkspaceRoot } from "../context/vs
 export function registerCommands(context: vscode.ExtensionContext): void {
   let repository: RepositoryProvider | undefined;
   let repositoryRoot: string | undefined;
-  const getRepository = (): RepositoryProvider | undefined => {
-    const workspaceRoot = readVscodeWorkspaceRoot();
+  const getRepository = (requestedPath?: string): RepositoryProvider | undefined => {
+    const workspaceRoot = readVscodeWorkspaceRoot(requestedPath);
     if (!workspaceRoot) return undefined;
     if (!repository || repositoryRoot !== workspaceRoot) {
       repository = createRepositoryContextProvider({ workspaceRoot });
@@ -27,8 +27,23 @@ export function registerCommands(context: vscode.ExtensionContext): void {
 
   const retrieveRepositoryContext = vscode.commands.registerCommand(
     "pairwave.retrieveRepositoryContext",
-    async (request: RepositoryRequest) => getRepository()?.retrieve(request),
+    async (request: unknown) => {
+      if (!isRepositoryRequest(request)) {
+        void vscode.window.showWarningMessage("Pairwave repository retrieval requires a valid request.");
+        return undefined;
+      }
+      return getRepository("path" in request ? request.path : undefined)?.retrieve(request);
+    },
   );
 
   context.subscriptions.push(startCommand, retrieveRepositoryContext);
+}
+
+function isRepositoryRequest(request: unknown): request is RepositoryRequest {
+  if (!request || typeof request !== "object" || !("kind" in request) || typeof request.kind !== "string") return false;
+  if (request.kind === "files" || request.kind === "modified-files") return true;
+  if (request.kind === "diff") return !("path" in request) || typeof request.path === "string";
+  return ["file", "symbols", "references", "dependencies"].includes(request.kind)
+    && "path" in request
+    && typeof request.path === "string";
 }
