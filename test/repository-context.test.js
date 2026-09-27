@@ -7,12 +7,12 @@ const { execFileSync } = require("node:child_process");
 const { createRepositoryContextProvider } = require("../dist/context/repository");
 const { collectEditorContext } = require("../dist/context");
 
-function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, diffFailure, referencesAdapter = true, contentLimit } = {}) {
+function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, referencesAdapter = true, contentLimit } = {}) {
   const calls = [];
   const git = {
     listChangedFiles: async () => {
       calls.push("listChangedFiles");
-      if (failure) throw failure;
+      if (listFailure || failure) throw listFailure || failure;
       return changed;
     },
     readDiff: async () => {
@@ -92,6 +92,16 @@ test("retains changed files when only diff retrieval fails", async () => {
   assert.equal(context.degraded, true);
 });
 
+test("retains a successful diff when changed-file discovery fails", async () => {
+  const { provider } = createProvider({ listFailure: new Error("changed files unavailable"), diff: "+usable diff" });
+
+  const context = await provider.collectInitial({ maxChars: 500 });
+
+  assert.deepEqual(context.changedFiles, []);
+  assert.equal(context.diff, "+usable diff");
+  assert.equal(context.degraded, true);
+});
+
 test("rejects an initial budget smaller than the repository context envelope", async () => {
   const { provider } = createProvider();
 
@@ -165,6 +175,53 @@ test("bounds file and diff retrieval to the configured content limit", async () 
 
   assert.equal(file.content.length, 32);
   assert.equal(diff.length, 32);
+});
+
+test("passes the content limit to the filesystem read boundary", async () => {
+  const reads = [];
+  const provider = createRepositoryContextProvider({
+    workspaceRoot: "/workspace",
+    git: {
+      listChangedFiles: async () => [],
+      readDiff: async () => "",
+      listFiles: async () => [],
+    },
+    contentLimit: 32,
+    fileSystem: {
+      readFile: async (filePath, maxBytes) => {
+        reads.push({ filePath, maxBytes });
+        return "x".repeat(100);
+      },
+    },
+  });
+
+  const result = await provider.retrieve({ kind: "file", path: "src/app.ts" });
+
+  assert.deepEqual(result, { path: "src/app.ts", content: "x".repeat(32) });
+  assert.deepEqual(reads, [{ filePath: "src/app.ts", maxBytes: 32 }]);
+});
+
+test("bounds native filesystem reads before returning repository content", async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-bounded-read-"));
+
+  try {
+    fs.writeFileSync(path.join(workspaceRoot, "large.txt"), Buffer.alloc(8 * 1024 * 1024, 97));
+    const provider = createRepositoryContextProvider({
+      workspaceRoot,
+      contentLimit: 32,
+      git: {
+        listChangedFiles: async () => [],
+        readDiff: async () => "",
+        listFiles: async () => ["large.txt"],
+      },
+    });
+
+    const file = await provider.retrieve({ kind: "file", path: "large.txt" });
+
+    assert.deepEqual(file, { path: "large.txt", content: "a".repeat(32) });
+  } finally {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 test("bounds aggregate progressive retrieval results", async () => {

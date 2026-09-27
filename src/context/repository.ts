@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { readFile as readFileCallback, realpath } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -19,7 +19,7 @@ export interface RepositoryGitPort {
 }
 
 export interface RepositoryFileSystemPort {
-  readonly readFile: (path: string) => Promise<string>;
+  readonly readFile: (path: string, maxBytes?: number) => Promise<string>;
 }
 
 export interface RepositoryContextItem {
@@ -77,7 +77,7 @@ async function collectInitial(git: RepositoryGitPort, workspaceRoot: string, opt
   try {
     changedFiles = await git.listChangedFiles();
   } catch {
-    return emptyRepositoryContext(true);
+    degraded = true;
   }
   try {
     diff = await git.readDiff();
@@ -172,7 +172,7 @@ function fitAggregate<T>(items: readonly T[], contentLimit: number): T[] {
 
 async function readBoundedFile(fileSystem: RepositoryFileSystemPort, path: string, contentLimit: number): Promise<string | undefined> {
   try {
-    return (await fileSystem.readFile(path)).slice(0, contentLimit);
+    return (await fileSystem.readFile(path, contentLimit)).slice(0, contentLimit);
   } catch {
     return undefined;
   }
@@ -196,10 +196,6 @@ function buildInitialContext(context: RepositoryContext, changedFiles: readonly 
   if (changedFiles.length > 0) items.push({ kind: "git-changes", priority: 4, content: changedFiles.join("\n") });
   if (diff.length > 0) items.push({ kind: "git-diff", priority: 4, content: diff });
   return { ...context, changedFiles, diff, items };
-}
-
-function emptyRepositoryContext(degraded: boolean): RepositoryContext {
-  return { changedFiles: [], diff: "", files: [], items: [], degraded };
 }
 
 function isSafeRepositoryPath(workspaceRoot: string, candidate: string): boolean {
@@ -262,14 +258,29 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
 function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
   const canonicalRoot = realpath(workspaceRoot);
   return {
-    readFile: async (filePath) => {
+    readFile: async (filePath, maxBytes) => {
       const root = await canonicalRoot;
       const candidate = await realpath(path.resolve(root, filePath));
       const relative = path.relative(root, candidate);
       if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
         throw new Error("repository path escapes workspace");
       }
-      return readFileCallback(candidate, "utf8");
+      if (maxBytes === undefined) {
+        const handle = await open(candidate, "r");
+        try {
+          return (await handle.readFile("utf8")).toString();
+        } finally {
+          await handle.close();
+        }
+      }
+      const handle = await open(candidate, "r");
+      try {
+        const buffer = Buffer.alloc(Math.max(0, maxBytes));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        return buffer.subarray(0, bytesRead).toString("utf8");
+      } finally {
+        await handle.close();
+      }
     },
   };
 }
