@@ -7,7 +7,7 @@ const { execFileSync } = require("node:child_process");
 const { createRepositoryContextProvider } = require("../dist/context/repository");
 const { collectEditorContext } = require("../dist/context");
 
-function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure } = {}) {
+function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, diffFailure } = {}) {
   const calls = [];
   const provider = createRepositoryContextProvider({
     workspaceRoot: "/workspace",
@@ -19,7 +19,7 @@ function createProvider({ files = {}, ignored = [], changed = [], diff = "", ref
       },
       readDiff: async () => {
         calls.push("readDiff");
-        if (failure) throw failure;
+        if (diffFailure || failure) throw diffFailure || failure;
         return diff;
       },
       readFileDiff: async () => {
@@ -76,6 +76,16 @@ test("reports staged and unstaged changes with bounded diff content", async () =
   assert.deepEqual(context.changedFiles, ["src/app.ts", "README.md"]);
   assert.equal(JSON.stringify(context).length <= 180, true);
   assert.equal(context.degraded, false);
+});
+
+test("retains changed files when only diff retrieval fails", async () => {
+  const { provider } = createProvider({ changed: ["src/app.ts"], diffFailure: new Error("diff unavailable") });
+
+  const context = await provider.collectInitial({ maxChars: 500 });
+
+  assert.deepEqual(context.changedFiles, ["src/app.ts"]);
+  assert.equal(context.diff, "");
+  assert.equal(context.degraded, true);
 });
 
 test("rejects an initial budget smaller than the repository context envelope", async () => {
@@ -148,16 +158,40 @@ test("rejects traversal and absolute paths before reading repository files", asy
   assert.deepEqual(calls, []);
 });
 
+test("rejects native file reads through symlinks that escape the workspace", async () => {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-symlink-"));
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-outside-"));
+
+  try {
+    fs.writeFileSync(path.join(outsideRoot, "secret.txt"), "secret");
+    fs.symlinkSync(outsideRoot, path.join(workspaceRoot, "link"), "dir");
+    const provider = createRepositoryContextProvider({
+      workspaceRoot,
+      git: {
+        listChangedFiles: async () => [],
+        readDiff: async () => "",
+        listFiles: async () => ["link/secret.txt"],
+      },
+    });
+
+    assert.equal(await provider.retrieve({ kind: "file", path: "link/secret.txt" }), undefined);
+    assert.deepEqual(await provider.retrieve({ kind: "files" }), []);
+  } finally {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
 test("derives symbols and dependencies from a requested file when indexes are unavailable", async () => {
   const { provider } = createProvider({
-    files: { "src/app.ts": "import { util } from './util';\nexport const answer = util;\nfunction render() {}" },
+    files: { "src/app.ts": "import './register';\nexport { util } from './util';\nexport const answer = util;\nfunction render() {}" },
   });
 
   const symbols = await provider.retrieve({ kind: "symbols", path: "src/app.ts" });
   const dependencies = await provider.retrieve({ kind: "dependencies", path: "src/app.ts" });
 
   assert.deepEqual(symbols, ["answer", "render"]);
-  assert.deepEqual(dependencies, ["./util"]);
+  assert.deepEqual(dependencies, ["./register", "./util"]);
 });
 
 test("retrieves references through the repository index boundary", async () => {
@@ -263,15 +297,18 @@ test("resolves native relative imports when retrieving references", async () => 
     runGit("init", "--quiet");
     runGit("config", "user.email", "pairwave@example.test");
     runGit("config", "user.name", "Pairwave Test");
-    write("src/app.ts", "import { util } from './util';\nexport const app = util;\n");
+    write("src/app.ts", "import './register';\nexport { util } from './util';\nexport const app = util;\n");
+    write("src/register.ts", "export const registered = true;\n");
     write("src/util.ts", "export const util = true;\n");
     runGit("add", ".");
     runGit("commit", "--quiet", "-m", "initial");
 
     const provider = createRepositoryContextProvider({ workspaceRoot });
-    const references = await provider.retrieve({ kind: "references", path: "src/util.ts" });
+    const registerReferences = await provider.retrieve({ kind: "references", path: "src/register.ts" });
+    const utilReferences = await provider.retrieve({ kind: "references", path: "src/util.ts" });
 
-    assert.deepEqual(references, ["src/app.ts:1:import { util } from './util';"]);
+    assert.deepEqual(registerReferences, ["src/app.ts:1:import './register';"]);
+    assert.deepEqual(utilReferences, ["src/app.ts:2:export { util } from './util';"]);
   } finally {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }

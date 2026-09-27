@@ -6,10 +6,15 @@ import { readVscodeEditorSnapshot, readVscodeWorkspaceRoot } from "../context/vs
 /** Register Pairwave's extension-host commands. */
 export function registerCommands(context: vscode.ExtensionContext): void {
   let repository: RepositoryProvider | undefined;
+  let repositoryRoot: string | undefined;
   const getRepository = (): RepositoryProvider | undefined => {
     const workspaceRoot = readVscodeWorkspaceRoot();
     if (!workspaceRoot) return undefined;
-    return repository ??= createRepositoryContextProvider({ workspaceRoot });
+    if (!repository || repositoryRoot !== workspaceRoot) {
+      repository = createRepositoryContextProvider({ workspaceRoot });
+      repositoryRoot = workspaceRoot;
+    }
+    return repository;
   };
 
   const startCommand = vscode.commands.registerCommand("pairwave.start", async () => {

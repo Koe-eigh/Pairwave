@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { readFile as readFileCallback } from "node:fs/promises";
+import { readFile as readFileCallback, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -226,12 +226,12 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
     listFiles: () => runGit("ls-files", "--cached", "--others", "--exclude-standard").then(uniqueLines),
     readReferences: async (requestedPath) => {
       try {
-        const output = await runGit("grep", "-n", "-E", "(from[[:space:]]+|import[[:space:]]*\\(|require[[:space:]]*\\()[[:space:]]*['\"][^'\"]+['\"]", "--", ".");
+        const output = await runGit("grep", "-n", "-E", "(from|import|require)", "--", ".");
         const requested = path.posix.normalize(requestedPath);
         return uniqueLines(output.split(/\r?\n/).filter((line) => {
           const match = line.match(/^(.+?):\d+:(.*)$/);
           if (!match) return false;
-          const specifier = match[2].match(/(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/)?.[1];
+          const specifier = match[2].match(/(?:from\s+|import\s+|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/)?.[1];
           if (!specifier?.startsWith(".")) return false;
           const sourcePath = path.posix.dirname(match[1]);
           const resolved = path.posix.normalize(path.posix.join(sourcePath, specifier));
@@ -245,7 +245,18 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
 }
 
 function createFileSystemPort(workspaceRoot: string): RepositoryFileSystemPort {
-  return { readFile: (filePath) => readFileCallback(path.resolve(workspaceRoot, filePath), "utf8") };
+  const canonicalRoot = realpath(workspaceRoot);
+  return {
+    readFile: async (filePath) => {
+      const root = await canonicalRoot;
+      const candidate = await realpath(path.resolve(root, filePath));
+      const relative = path.relative(root, candidate);
+      if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error("repository path escapes workspace");
+      }
+      return readFileCallback(candidate, "utf8");
+    },
+  };
 }
 
 function uniqueLines(value: string): string[] {
@@ -258,6 +269,6 @@ function extractSymbols(content: string): string[] {
 }
 
 function extractDependencies(content: string): string[] {
-  const dependencies = [...content.matchAll(/(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/g)];
+  const dependencies = [...content.matchAll(/(?:from\s+|import\s+|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/g)];
   return [...new Set(dependencies.map((match) => match[1]))];
 }
