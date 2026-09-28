@@ -7,7 +7,7 @@ const { execFileSync } = require("node:child_process");
 const { createRepositoryContextProvider } = require("../dist/context/repository");
 const { collectEditorContext } = require("../dist/context");
 
-function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, ignoreFailure, referencesAdapter = true, contentLimit } = {}) {
+function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, ignoreFailure, referencesFailure, referencesAdapter = true, contentLimit } = {}) {
   const calls = [];
   const git = {
     listChangedFiles: async () => {
@@ -38,7 +38,7 @@ function createProvider({ files = {}, ignored = [], changed = [], diff = "", ref
   if (referencesAdapter) {
     git.readReferences = async (filePath) => {
       calls.push(`readReferences:${filePath}`);
-      if (failure) throw failure;
+      if (referencesFailure || failure) throw referencesFailure || failure;
       return references;
     };
   }
@@ -371,6 +371,18 @@ test("degrades independently for missing indexes and unreadable discovered files
 
   assert.deepEqual(references, []);
   assert.deepEqual(files, [{ path: "src/app.ts", content: "app" }]);
+});
+
+test("degrades when a configured repository index rejects", async () => {
+  const { calls, provider } = createProvider({
+    files: { "src/app.ts": "app" },
+    referencesFailure: new Error("references index unavailable"),
+  });
+
+  const references = await provider.retrieve({ kind: "references", path: "src/app.ts" });
+
+  assert.deepEqual(references, []);
+  assert.deepEqual(calls, ["readReferences:src/app.ts"]);
 });
 
 test("keeps editor signals ahead of Git, open files, and repository items within the budget", () => {
