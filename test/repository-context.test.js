@@ -226,6 +226,26 @@ test("passes diff limits to the Git acquisition boundary", async () => {
   assert.deepEqual(limits, [100, 32, ["src/app.ts", 32]]);
 });
 
+test("passes enumeration limits to the Git acquisition boundary", async () => {
+  const limits = [];
+  const provider = createRepositoryContextProvider({
+    workspaceRoot: "/workspace",
+    contentLimit: 32,
+    git: {
+      listChangedFiles: async (maxBytes) => { limits.push(["changed", maxBytes]); return []; },
+      readDiff: async () => "",
+      listFiles: async (maxBytes) => { limits.push(["files", maxBytes]); return []; },
+    },
+    fileSystem: { readFile: async () => "" },
+  });
+
+  await provider.collectInitial({ maxChars: 100 });
+  await provider.retrieve({ kind: "modified-files" });
+  await provider.retrieve({ kind: "files" });
+
+  assert.deepEqual(limits, [["changed", 100], ["changed", 32], ["files", 32]]);
+});
+
 test("stops file retrieval after the aggregate limit is reached", async () => {
   const { calls, provider } = createProvider({
     files: { "a.ts": "a".repeat(20), "b.ts": "b".repeat(20), "c.ts": "c".repeat(20) },

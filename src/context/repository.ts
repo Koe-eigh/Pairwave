@@ -9,11 +9,11 @@ const DEFAULT_CONTENT_LIMIT = 4_000;
 const MIN_INITIAL_CONTEXT_CHARS = JSON.stringify({ changedFiles: [], diff: "", files: [], items: [], degraded: false }).length;
 
 export interface RepositoryGitPort {
-  readonly listChangedFiles: () => Promise<readonly string[]>;
+  readonly listChangedFiles: (maxBytes?: number) => Promise<readonly string[]>;
   readonly readDiff: (maxBytes?: number) => Promise<string>;
   readonly readFileDiff?: (path: string, maxBytes?: number) => Promise<string>;
   readonly isIgnored?: (path: string) => Promise<boolean>;
-  readonly listFiles: () => Promise<readonly string[]>;
+  readonly listFiles: (maxBytes?: number) => Promise<readonly string[]>;
   readonly readSymbols?: (path: string) => Promise<readonly string[]>;
   readonly readReferences?: (path: string) => Promise<readonly string[]>;
   readonly readDependencies?: (path: string) => Promise<readonly string[]>;
@@ -76,7 +76,7 @@ async function collectInitial(git: RepositoryGitPort, workspaceRoot: string, opt
   let diff = "";
   let degraded = false;
   try {
-    changedFiles = await git.listChangedFiles();
+    changedFiles = await git.listChangedFiles(options.maxChars);
   } catch {
     degraded = true;
   }
@@ -109,7 +109,7 @@ async function retrieveRepositoryContext(
 ): Promise<unknown> {
   if (request.kind === "modified-files") {
     try {
-      return fitAggregate((await git.listChangedFiles()).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath)), contentLimit);
+      return fitAggregate((await git.listChangedFiles(contentLimit)).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath)), contentLimit);
     } catch {
       return [];
     }
@@ -127,7 +127,7 @@ async function retrieveRepositoryContext(
   }
   if (request.kind === "files") {
     try {
-      const paths = (await git.listFiles()).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath));
+      const paths = (await git.listFiles(contentLimit)).filter((filePath) => isSafeRepositoryPath(workspaceRoot, filePath));
       const files: Array<{ path: string; content: string }> = [];
       for (const path of paths) {
         const content = await readBoundedFile(fileSystem, path, contentLimit);
@@ -243,10 +243,10 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
     });
   });
   return {
-    listChangedFiles: async () => {
+    listChangedFiles: async (maxBytes) => {
       const results = await Promise.allSettled([
-        runGit("diff", "--name-only", "HEAD"),
-        runGit("ls-files", "--others", "--exclude-standard"),
+        maxBytes === undefined ? runGit("diff", "--name-only", "HEAD") : runGitBounded(maxBytes, "diff", "--name-only", "HEAD"),
+        maxBytes === undefined ? runGit("ls-files", "--others", "--exclude-standard") : runGitBounded(maxBytes, "ls-files", "--others", "--exclude-standard"),
       ]);
       const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (firstFailure && results.every((result) => result.status === "rejected")) throw firstFailure.reason;
@@ -270,7 +270,10 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
         throw error;
       }
     },
-    listFiles: () => runGit("ls-files", "--cached", "--others", "--exclude-standard").then(uniqueLines),
+    listFiles: (maxBytes) => (maxBytes === undefined
+      ? runGit("ls-files", "--cached", "--others", "--exclude-standard")
+      : runGitBounded(maxBytes, "ls-files", "--cached", "--others", "--exclude-standard"))
+      .then(uniqueLines),
     readReferences: async (requestedPath) => {
       try {
         const output = await runGit("grep", "-n", "-E", "(from|import|require)", "--", ".");
