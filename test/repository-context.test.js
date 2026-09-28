@@ -412,6 +412,23 @@ test("keeps diagnostics ahead of equal-priority repository items", () => {
   assert.equal(JSON.stringify(context).length <= 350, true);
 });
 
+test("keeps higher-priority open files ahead of lower-priority repository items", () => {
+  const context = collectEditorContext({
+    openFiles: ["src/app.ts"],
+    diagnostics: [],
+  }, {
+    maxChars: 250,
+    repositoryItems: [
+      { kind: "git-changes", priority: 4, content: "README.md" },
+      { kind: "repository-file", priority: 6, path: "unrelated.ts", content: "x".repeat(100) },
+    ],
+  });
+
+  assert.equal(context.items.some((item) => item.kind === "open-files"), true);
+  assert.equal(context.items.some((item) => item.kind === "repository-file"), false);
+  assert.equal(JSON.stringify(context).length <= 250, true);
+});
+
 test("uses native Git discovery for staged, unstaged, permitted, and ignored files", async () => {
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairwave-repository-"));
   const runGit = (...args) => execFileSync("git", args, { cwd: workspaceRoot, encoding: "utf8" });

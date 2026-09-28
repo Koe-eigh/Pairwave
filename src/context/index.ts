@@ -87,7 +87,11 @@ function getSurroundingCode(active: NonNullable<EditorSnapshot["activeFile"]>, l
 function boundItems(items: readonly ContextItem[], maxChars: number): { items: readonly ContextItem[]; truncated: boolean } {
   const result: ContextItem[] = [];
   let size = 2; let truncated = false;
-  for (const item of items) {
+  const rankedItems = items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => left.item.priority - right.item.priority || left.index - right.index)
+    .map(({ item }) => item);
+  for (const item of rankedItems) {
     const remaining = maxChars - size;
     if (remaining <= 0) { truncated = true; break; }
     const serialized = JSON.stringify(item);
