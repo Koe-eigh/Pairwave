@@ -7,7 +7,7 @@ const { execFileSync } = require("node:child_process");
 const { createRepositoryContextProvider } = require("../dist/context/repository");
 const { collectEditorContext } = require("../dist/context");
 
-function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, ignoreFailure, referencesFailure, referencesAdapter = true, contentLimit } = {}) {
+function createProvider({ files = {}, ignored = [], changed = [], diff = "", references = [], unreadable = [], failure, listFailure, diffFailure, ignoreFailure, referencesFailure, referencesAdapter = true, fileDiffAdapter = true, contentLimit } = {}) {
   const calls = [];
   const git = {
     listChangedFiles: async () => {
@@ -20,11 +20,6 @@ function createProvider({ files = {}, ignored = [], changed = [], diff = "", ref
       if (diffFailure || failure) throw diffFailure || failure;
       return diff;
     },
-    readFileDiff: async () => {
-      calls.push("readFileDiff");
-      if (failure) throw failure;
-      return diff;
-    },
     isIgnored: async (filePath) => {
       if (ignoreFailure) throw ignoreFailure;
       return ignored.includes(filePath);
@@ -35,6 +30,13 @@ function createProvider({ files = {}, ignored = [], changed = [], diff = "", ref
       return Object.keys(files).filter((path) => !ignored.includes(path));
     },
   };
+  if (fileDiffAdapter) {
+    git.readFileDiff = async () => {
+      calls.push("readFileDiff");
+      if (failure) throw failure;
+      return diff;
+    };
+  }
   if (referencesAdapter) {
     git.readReferences = async (filePath) => {
       calls.push(`readReferences:${filePath}`);
@@ -191,6 +193,19 @@ test("retrieves modified files and diffs only when explicitly requested", async 
   assert.deepEqual(calls, ["listChangedFiles", "readFileDiff"]);
 });
 
+test("returns an empty file-scoped diff when the Git adapter cannot provide file diffs", async () => {
+  const { calls, provider } = createProvider({
+    changed: ["src/app.ts"],
+    diff: "+changed",
+    fileDiffAdapter: false,
+  });
+
+  const changes = await provider.retrieve({ kind: "diff", path: "src/app.ts" });
+
+  assert.equal(changes, "");
+  assert.deepEqual(calls, []);
+});
+
 test("bounds file and diff retrieval to the configured content limit", async () => {
   const { provider } = createProvider({
     files: { "src/app.ts": "x".repeat(100) },
@@ -246,16 +261,16 @@ test("passes enumeration limits to the Git acquisition boundary", async () => {
   assert.deepEqual(limits, [["changed", 100], ["changed", 32], ["files", 32]]);
 });
 
-test("stops file retrieval after the aggregate limit is reached", async () => {
+test("skips oversized files and continues retrieval within the aggregate limit", async () => {
   const { calls, provider } = createProvider({
-    files: { "a.ts": "a".repeat(20), "b.ts": "b".repeat(20), "c.ts": "c".repeat(20) },
-    contentLimit: 70,
+    files: { "a.ts": "a".repeat(70), "b.ts": "b".repeat(20), "c.ts": "c".repeat(20) },
+    contentLimit: 90,
   });
 
   const files = await provider.retrieve({ kind: "files" });
 
-  assert.equal(files.length, 1);
-  assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), ["readFile:a.ts", "readFile:b.ts"]);
+  assert.deepEqual(files.map((file) => file.path), ["b.ts", "c.ts"]);
+  assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), ["readFile:a.ts", "readFile:b.ts", "readFile:c.ts"]);
 });
 
 test("passes the content limit to the filesystem read boundary", async () => {

@@ -117,9 +117,14 @@ async function retrieveRepositoryContext(
   if (request.kind === "diff") {
     try {
       if (request.path && !isSafeRepositoryPath(workspaceRoot, request.path)) return "";
-      const diff = request.path && git.readFileDiff
-        ? await git.readFileDiff(request.path, contentLimit)
-        : await git.readDiff(contentLimit);
+      let diff = "";
+      if (request.path) {
+        const readFileDiff = git.readFileDiff;
+        if (!readFileDiff) return "";
+        diff = await readFileDiff(request.path, contentLimit);
+      } else {
+        diff = await git.readDiff(contentLimit);
+      }
       return diff.slice(0, contentLimit);
     } catch {
       return "";
@@ -133,7 +138,7 @@ async function retrieveRepositoryContext(
         const content = await readBoundedFile(fileSystem, path, contentLimit);
         if (content === undefined) continue;
         const next = { path, content };
-        if (!fitsAggregate(files, next, contentLimit)) break;
+        if (!fitsAggregate(files, next, contentLimit)) continue;
         files.push(next);
       }
       return files;
