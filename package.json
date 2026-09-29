@@ -21,6 +21,10 @@
       {
         "command": "pairwave.start",
         "title": "Pairwave: Start"
+      },
+      {
+        "command": "pairwave.retrieveRepositoryContext",
+        "title": "Pairwave: Retrieve Repository Context"
       }
     ]
   },
@@ -29,7 +33,7 @@
     "compile": "npm run build",
     "lint": "npm run typecheck",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/context.test.js",
+    "test": "npm run build && node --test test/*.test.js",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {

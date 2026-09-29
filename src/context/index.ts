@@ -1,3 +1,5 @@
+import type { RepositoryContextItem } from "./repository";
+
 /** A zero-based position in a text document. */
 export interface TextPosition { readonly line: number; readonly character: number; }
 export interface TextRange { readonly start: TextPosition; readonly end: TextPosition; }
@@ -17,7 +19,7 @@ export interface EditorSnapshot {
   readonly diagnostics: readonly EditorDiagnostic[];
 }
 export interface ContextItem {
-  readonly kind: "selection" | "cursor" | "symbol" | "active-file" | "diagnostics" | "open-files";
+  readonly kind: "selection" | "cursor" | "symbol" | "active-file" | "diagnostics" | "git-changes" | "git-diff" | "open-files" | "repository-file" | "repository-symbol" | "repository-reference" | "repository-dependency";
   readonly priority: number; readonly path?: string; readonly content?: string;
 }
 export interface EditorContext {
@@ -29,7 +31,11 @@ export interface EditorContext {
   readonly openFiles: readonly string[]; readonly diagnostics: readonly EditorDiagnostic[];
   readonly items: readonly ContextItem[]; readonly truncated: boolean;
 }
-export interface ContextOptions { readonly maxChars?: number; readonly surroundingLines?: number; }
+export interface ContextOptions {
+  readonly maxChars?: number;
+  readonly surroundingLines?: number;
+  readonly repositoryItems?: readonly RepositoryContextItem[];
+}
 
 const DEFAULT_MAX_CHARS = 12_000;
 const DEFAULT_SURROUNDING_LINES = 20;
@@ -55,6 +61,7 @@ export function collectEditorContext(snapshot: EditorSnapshot, options: ContextO
   const surroundingCode = active ? getSurroundingCode(active, surroundingLines) : undefined;
   if (active && surroundingCode) items.push({ kind: "active-file", priority: 3, path: active.path, content: surroundingCode.text });
   if (snapshot.diagnostics.length > 0) items.push({ kind: "diagnostics", priority: 4, content: snapshot.diagnostics.map((d) => d.message).join("\n") });
+  if (options.repositoryItems) items.push(...options.repositoryItems);
   if (snapshot.openFiles.length > 0) items.push({ kind: "open-files", priority: 5, content: snapshot.openFiles.join("\n") });
 
   const bounded = boundItems(items, maxChars);
@@ -80,7 +87,11 @@ function getSurroundingCode(active: NonNullable<EditorSnapshot["activeFile"]>, l
 function boundItems(items: readonly ContextItem[], maxChars: number): { items: readonly ContextItem[]; truncated: boolean } {
   const result: ContextItem[] = [];
   let size = 2; let truncated = false;
-  for (const item of items) {
+  const rankedItems = items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => left.item.priority - right.item.priority || left.index - right.index)
+    .map(({ item }) => item);
+  for (const item of rankedItems) {
     const remaining = maxChars - size;
     if (remaining <= 0) { truncated = true; break; }
     const serialized = JSON.stringify(item);

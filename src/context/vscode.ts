@@ -30,6 +30,37 @@ export async function readVscodeEditorSnapshot(): Promise<EditorSnapshot> {
   return { activeFile, openFiles, diagnostics };
 }
 
+/** Resolve the workspace root at the VS Code adapter boundary. */
+export function readVscodeWorkspaceRoot(requestedPath?: string): string | undefined {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) return undefined;
+
+  if (requestedPath) {
+    const normalizedPath = requestedPath.replaceAll("\\", "/");
+    const matchingFolder = folders.find((folder) => {
+      const folderName = folder.name.replaceAll("\\", "/");
+      return normalizedPath === folderName || normalizedPath.startsWith(`${folderName}/`);
+    });
+    if (matchingFolder) return matchingFolder.uri.fsPath;
+  }
+
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  const activeFolder = activeUri ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+  return activeFolder?.uri.fsPath ?? folders[0].uri.fsPath;
+}
+
+/** Remove a multi-root workspace folder prefix before repository retrieval. */
+export function readVscodeWorkspacePath(requestedPath: string): string {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const normalizedPath = requestedPath.replaceAll("\\", "/");
+  const folder = folders.find((candidate) => {
+    const folderName = candidate.name.replaceAll("\\", "/");
+    return normalizedPath.startsWith(`${folderName}/`);
+  });
+  if (!folder) return requestedPath;
+  return normalizedPath.slice(folder.name.replaceAll("\\", "/").length + 1);
+}
+
 function workspacePath(uri: vscode.Uri): string | undefined {
   const folder = vscode.workspace.getWorkspaceFolder(uri);
   if (!folder) return undefined;
