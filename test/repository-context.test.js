@@ -191,6 +191,20 @@ test("retrieves modified files and diffs only when explicitly requested", async 
   assert.deepEqual(calls, ["listChangedFiles", "readFileDiff"]);
 });
 
+test("does not return a repository-wide diff for a file-scoped request without a file diff adapter", async () => {
+  const provider = createRepositoryContextProvider({
+    workspaceRoot: "/workspace",
+    git: {
+      listChangedFiles: async () => [],
+      readDiff: async () => "repository-wide",
+      listFiles: async () => [],
+    },
+    fileSystem: { readFile: async () => "" },
+  });
+
+  assert.equal(await provider.retrieve({ kind: "diff", path: "src/app.ts" }), "");
+});
+
 test("bounds file and diff retrieval to the configured content limit", async () => {
   const { provider } = createProvider({
     files: { "src/app.ts": "x".repeat(100) },
@@ -246,7 +260,7 @@ test("passes enumeration limits to the Git acquisition boundary", async () => {
   assert.deepEqual(limits, [["changed", 100], ["changed", 32], ["files", 32]]);
 });
 
-test("stops file retrieval after the aggregate limit is reached", async () => {
+test("checks later files after an earlier file reaches the aggregate limit", async () => {
   const { calls, provider } = createProvider({
     files: { "a.ts": "a".repeat(20), "b.ts": "b".repeat(20), "c.ts": "c".repeat(20) },
     contentLimit: 70,
@@ -255,6 +269,18 @@ test("stops file retrieval after the aggregate limit is reached", async () => {
   const files = await provider.retrieve({ kind: "files" });
 
   assert.equal(files.length, 1);
+  assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), ["readFile:a.ts", "readFile:b.ts", "readFile:c.ts"]);
+});
+
+test("skips an oversized file so later files can fit the aggregate limit", async () => {
+  const { calls, provider } = createProvider({
+    files: { "a.ts": "a".repeat(100), "b.ts": "b" },
+    contentLimit: 40,
+  });
+
+  const files = await provider.retrieve({ kind: "files" });
+
+  assert.deepEqual(files, [{ path: "b.ts", content: "b" }]);
   assert.deepEqual(calls.filter((call) => call.startsWith("readFile:")), ["readFile:a.ts", "readFile:b.ts"]);
 });
 
@@ -515,6 +541,7 @@ test("retains untracked files in an unborn repository", async () => {
     const initial = await provider.collectInitial({ maxChars: 2_000 });
 
     assert.equal(initial.changedFiles.includes("src/app.ts"), true);
+    assert.equal(initial.degraded, true);
   } finally {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   }

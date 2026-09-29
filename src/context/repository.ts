@@ -19,6 +19,16 @@ export interface RepositoryGitPort {
   readonly readDependencies?: (path: string) => Promise<readonly string[]>;
 }
 
+class PartialGitFailure extends Error {
+  readonly changedFiles: readonly string[];
+
+  constructor(changedFiles: readonly string[], cause: unknown) {
+    super("Git changed-file discovery was only partially successful", { cause });
+    this.name = "PartialGitFailure";
+    this.changedFiles = changedFiles;
+  }
+}
+
 export interface RepositoryFileSystemPort {
   readonly readFile: (path: string, maxBytes?: number) => Promise<string>;
 }
@@ -77,7 +87,8 @@ async function collectInitial(git: RepositoryGitPort, workspaceRoot: string, opt
   let degraded = false;
   try {
     changedFiles = await git.listChangedFiles(options.maxChars);
-  } catch {
+  } catch (error) {
+    if (error instanceof PartialGitFailure) changedFiles = error.changedFiles;
     degraded = true;
   }
   try {
@@ -117,8 +128,10 @@ async function retrieveRepositoryContext(
   if (request.kind === "diff") {
     try {
       if (request.path && !isSafeRepositoryPath(workspaceRoot, request.path)) return "";
-      const diff = request.path && git.readFileDiff
-        ? await git.readFileDiff(request.path, contentLimit)
+      if (request.path && !git.readFileDiff) return "";
+      const readFileDiff = git.readFileDiff;
+      const diff = request.path
+        ? await readFileDiff!(request.path, contentLimit)
         : await git.readDiff(contentLimit);
       return diff.slice(0, contentLimit);
     } catch {
@@ -133,7 +146,7 @@ async function retrieveRepositoryContext(
         const content = await readBoundedFile(fileSystem, path, contentLimit);
         if (content === undefined) continue;
         const next = { path, content };
-        if (!fitsAggregate(files, next, contentLimit)) break;
+        if (!fitsAggregate(files, next, contentLimit)) continue;
         files.push(next);
       }
       return files;
@@ -250,10 +263,12 @@ function createGitPort(workspaceRoot: string): RepositoryGitPort {
       ]);
       const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (firstFailure && results.every((result) => result.status === "rejected")) throw firstFailure.reason;
-      return uniqueLines(results
+      const changedFiles = uniqueLines(results
         .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
         .map((result) => result.value)
         .join("\n"));
+      if (firstFailure) throw new PartialGitFailure(changedFiles, firstFailure.reason);
+      return changedFiles;
     },
     readDiff: (maxBytes) => maxBytes === undefined
       ? runGit("diff", "HEAD", "--no-ext-diff", "--unified=20")
