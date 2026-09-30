@@ -256,6 +256,19 @@ For the MVP:
 - **Pairwave backend:** none required
 - **Architecture:** both voice and coding-agent providers remain replaceable
 
+### Coding-Agent Contract
+
+The extension talks to a coding agent through `CodingAgent.run`, using provider-neutral request,
+context, progress, cancellation, result, and error types. Requests support read, search, explain,
+suggest, and modify actions; modification results contain proposed edits for the orchestration layer
+to review or apply.
+
+The MVP `CodexAgent` keeps provider-specific request details behind a `CodexTransport` boundary.
+The transport can be replaced by a live API implementation or a test fake without changing
+orchestration code. The API key is retrieved by a `SecretStorage` implementation (VS Code
+`SecretStorage` in the extension), never from configuration or source files. Provider failures are
+translated to `CodingAgentError` codes with user-facing messages and retry metadata.
+
 ### API Credentials
 
 For the MVP, Pairwave uses a **Bring Your Own Key (BYOK)** model.
@@ -293,4 +306,3 @@ AI Provider
 This allows the MVP to remain **local-first and backend-free** while avoiding plaintext credential storage.
 
 If Pairwave later manages credentials on behalf of users, the architecture should move toward a backend-managed credential model with short-lived client credentials rather than distributing long-lived service credentials to clients.
-
