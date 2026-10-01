@@ -35,6 +35,7 @@ export class FetchCodexTransport implements CodexTransport {
         model: request.model,
         input: formatInput(request),
         stream: true,
+        ...(request.action === "modify" ? { text: { format: EDIT_RESPONSE_FORMAT } } : {}),
       }),
       signal: options.signal,
     });
@@ -45,8 +46,8 @@ export class FetchCodexTransport implements CodexTransport {
       throw error;
     }
 
-    if (!response.body) return mapResponse(await response.json());
-    return readEventStream(response.body, options.onProgress);
+    if (!response.body) return mapResponse(await response.json(), request.action);
+    return readEventStream(response.body, request.action, options.onProgress);
   }
 }
 
@@ -58,7 +59,34 @@ function formatInput(request: CodexRequest): string {
   return context ? `${request.action}: ${request.input}\n\nContext:\n${context}` : `${request.action}: ${request.input}`;
 }
 
-async function readEventStream(body: ReadableStream<Uint8Array>, onProgress?: (progress: AgentProgress) => void): Promise<CodexResponse> {
+const EDIT_RESPONSE_FORMAT = {
+  type: "json_schema",
+  name: "pairwave_edits",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      text: { type: "string" },
+      edits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            oldText: { type: "string" },
+            newText: { type: "string" },
+          },
+          required: ["path", "newText"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["text", "edits"],
+    additionalProperties: false,
+  },
+};
+
+async function readEventStream(body: ReadableStream<Uint8Array>, action: CodexRequest["action"], onProgress?: (progress: AgentProgress) => void): Promise<CodexResponse> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -74,27 +102,54 @@ async function readEventStream(body: ReadableStream<Uint8Array>, onProgress?: (p
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       if (!data || data === "[DONE]") continue;
-      const event = JSON.parse(data) as { type?: string; delta?: string; response?: unknown };
+      const event = JSON.parse(data) as { type?: string; delta?: string; response?: unknown; error?: unknown };
       if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
         text += event.delta;
         onProgress?.({ phase: "working", message: "Codex is generating a response." });
       } else if (event.type === "response.completed") {
         finalResponse = event.response;
+      } else if (event.type === "response.failed") {
+        throw providerStreamError(event.response ?? event.error);
       } else if (event.type === "error") {
-        throw new Error("Codex reported an error while streaming the response.");
+        throw providerStreamError(event.error);
       }
     }
     if (chunk.done) break;
   }
 
-  const mapped = finalResponse ? mapResponse(finalResponse) : undefined;
-  return { text: text || mapped?.text || "", edits: mapped?.edits };
+  const mapped = finalResponse ? mapResponse(finalResponse, action) : undefined;
+  return mapped ?? { text, edits: [] };
 }
 
-function mapResponse(value: unknown): CodexResponse {
+function providerStreamError(value: unknown): Error & { status?: number } {
+  const details = value && typeof value === "object" ? value as { error?: unknown; status?: unknown } : {};
+  const providerError: { code?: unknown; message?: unknown } = details.error && typeof details.error === "object"
+    ? details.error as { code?: unknown; message?: unknown }
+    : {};
+  const message = typeof providerError.message === "string" ? providerError.message : "Codex reported an error while streaming the response.";
+  const error = new Error(`Codex stream failed: ${message}`) as Error & { status?: number };
+  if (typeof details.status === "number") error.status = details.status;
+  if (typeof providerError.code === "string") error.message += ` (${providerError.code})`;
+  return error;
+}
+
+function mapResponse(value: unknown, action?: CodexRequest["action"]): CodexResponse {
   const response = value as { output_text?: unknown; output?: unknown };
   const text = typeof response.output_text === "string" ? response.output_text : extractOutputText(response.output);
+  if (action === "modify") return mapEditEnvelope(text);
   return { text, edits: extractEdits(response.output) };
+}
+
+function mapEditEnvelope(text: string): CodexResponse {
+  try {
+    const value = JSON.parse(text) as { text?: unknown; edits?: unknown };
+    return {
+      text: typeof value.text === "string" ? value.text : text,
+      edits: extractEdits(value.edits),
+    };
+  } catch {
+    return { text, edits: [] };
+  }
 }
 
 function extractOutputText(output: unknown): string {
