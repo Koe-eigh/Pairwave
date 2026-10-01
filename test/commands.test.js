@@ -50,10 +50,12 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     delete require.cache[vscodeAdapterPath];
     const { registerCommands } = require("../dist/extension/commands");
     const context = { subscriptions: [] };
-    registerCommands(context);
+    const agentCalls = [];
+    const agent = { run: async (request) => { agentCalls.push(request); return { text: "ok" }; } };
+    registerCommands(context, agent);
 
-    assert.deepEqual([...commands.keys()], ["pairwave.start", "pairwave.retrieveRepositoryContext"]);
-    assert.equal(context.subscriptions.length, 2);
+    assert.deepEqual([...commands.keys()], ["pairwave.start", "pairwave.retrieveRepositoryContext", "pairwave.runAgent"]);
+    assert.equal(context.subscriptions.length, 3);
 
     const firstStart = await commands.get("pairwave.start")();
     const firstRequest = { kind: "file", path: "src/app.ts" };
@@ -75,6 +77,8 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       request: { kind: "file", path: "src/app.ts" },
     });
     assert.equal(await commands.get("pairwave.retrieveRepositoryContext")(), undefined);
+    assert.deepEqual(await commands.get("pairwave.runAgent")({ action: "explain", prompt: "Explain this" }), { text: "ok" });
+    assert.deepEqual(agentCalls, [{ action: "explain", prompt: "Explain this" }]);
     assert.deepEqual(providers.map(({ root }) => root), ["/workspace-a", "/workspace-b"]);
 
     for (const subscription of context.subscriptions) subscription.dispose();

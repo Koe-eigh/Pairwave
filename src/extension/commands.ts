@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
+import { CodingAgentError, type AgentRequest, type CodingAgent } from "../agents";
 import { collectEditorContext } from "../context";
 import { createRepositoryContextProvider, type RepositoryProvider, type RepositoryRequest } from "../context/repository";
 import { readVscodeEditorSnapshot, readVscodeWorkspacePath, readVscodeWorkspaceRoot } from "../context/vscode";
 
 /** Register Pairwave's extension-host commands. */
-export function registerCommands(context: vscode.ExtensionContext): void {
+export function registerCommands(context: vscode.ExtensionContext, agent: CodingAgent): void {
   let repository: RepositoryProvider | undefined;
   let repositoryRoot: string | undefined;
   const getRepository = (requestedPath?: string): RepositoryProvider | undefined => {
@@ -42,7 +43,27 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     },
   );
 
-  context.subscriptions.push(startCommand, retrieveRepositoryContext);
+  const runAgent = vscode.commands.registerCommand("pairwave.runAgent", async (request: unknown) => {
+    if (!isAgentRequest(request)) {
+      void vscode.window.showWarningMessage("Pairwave agent requests require an action and prompt.");
+      return undefined;
+    }
+    try {
+      return await agent.run(request);
+    } catch (error) {
+      const message = error instanceof CodingAgentError ? error.message : "The coding-agent request failed.";
+      void vscode.window.showErrorMessage(message);
+      return undefined;
+    }
+  });
+
+  context.subscriptions.push(startCommand, retrieveRepositoryContext, runAgent);
+}
+
+function isAgentRequest(request: unknown): request is AgentRequest {
+  if (!request || typeof request !== "object" || !("action" in request) || !("prompt" in request)) return false;
+  return ["read", "search", "explain", "suggest", "modify"].includes(request.action as string)
+    && typeof request.prompt === "string";
 }
 
 function isRepositoryRequest(request: unknown): request is RepositoryRequest {

@@ -25,6 +25,10 @@
       {
         "command": "pairwave.retrieveRepositoryContext",
         "title": "Pairwave: Retrieve Repository Context"
+      },
+      {
+        "command": "pairwave.runAgent",
+        "title": "Pairwave: Run Coding Agent"
       }
     ]
   },

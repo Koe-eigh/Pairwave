@@ -10,7 +10,7 @@ import {
 } from "./index";
 
 export interface SecretStorage {
-  get(key: string): Promise<string | undefined>;
+  get(key: string): PromiseLike<string | undefined>;
 }
 
 export interface CodexConfiguration {
@@ -75,8 +75,10 @@ export class CodexAgent implements CodingAgent {
     if (options.signal?.aborted) throw new CodingAgentError("The coding-agent request was cancelled.", "cancelled");
 
     const apiKey = await this.secrets.get(this.configuration.credentialKey);
+    if (options.signal?.aborted) throw new CodingAgentError("The coding-agent request was cancelled.", "cancelled");
     if (!apiKey) throw new CodingAgentError("Configure a Codex API key in Pairwave to continue.", "authentication");
 
+    if (options.signal?.aborted) throw new CodingAgentError("The coding-agent request was cancelled.", "cancelled");
     options.onProgress?.({ phase: "queued", message: "Queued Codex request." });
     try {
       const response = await this.transport.send({

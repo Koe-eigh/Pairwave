@@ -35,6 +35,45 @@ test("reports queued and completed progress and forwards cancellation", async ()
   await assert.rejects(agent.run({ action: "read", prompt: "Read the file" }, { signal: controller.signal }), (error) => error.code === "cancelled");
 });
 
+test("maps a provider AbortError to a cancelled coding-agent error", async () => {
+  const { agent } = createAgent({ send: async () => {
+    const error = new Error("request aborted");
+    error.name = "AbortError";
+    throw error;
+  } });
+  await assert.rejects(agent.run({ action: "read", prompt: "Read the file" }), (error) => {
+    assert.equal(error.code, "cancelled");
+    assert.equal(error.message, "The coding-agent request was cancelled.");
+    return true;
+  });
+});
+
+test("forwards provider progress to the caller", async () => {
+  const progress = [];
+  const { agent } = createAgent({ send: async (_request, options) => {
+    options.onProgress?.({ phase: "working", message: "Provider is working." });
+    return { text: "done" };
+  } });
+  await agent.run({ action: "read", prompt: "Read the file" }, { onProgress: (event) => progress.push(event) });
+  assert.deepEqual(progress.map((event) => event.phase), ["queued", "working", "completed"]);
+});
+
+test("does not dispatch when cancellation happens during credential retrieval", async () => {
+  const controller = new AbortController();
+  let resolveSecret;
+  let sends = 0;
+  const agent = new CodexAgent({
+    configuration: { model: "test", endpoint: "https://example.test", credentialKey: "key" },
+    secrets: { get: async () => new Promise((resolve) => { resolveSecret = resolve; }) },
+    transport: { send: async () => { sends += 1; return { text: "unexpected" }; } },
+  });
+  const pending = agent.run({ action: "read", prompt: "Read the file" }, { signal: controller.signal });
+  controller.abort();
+  resolveSecret("test-key");
+  await assert.rejects(pending, (error) => error.code === "cancelled");
+  assert.equal(sends, 0);
+});
+
 test("does not call the transport without a securely stored credential", async () => {
   const { agent, calls } = createAgent({ key: "" });
   await assert.rejects(agent.run({ action: "suggest", prompt: "Suggest an approach" }), (error) => {
