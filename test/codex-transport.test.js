@@ -31,7 +31,7 @@ test("maps Responses stream events and forwards working progress", async () => {
     model: "codex",
     input: "Explain this",
     action: "explain",
-    context: [],
+    context: [{ source: "editor", path: "src/app.ts", content: "const answer = 42;" }],
     apiKey: "secret",
   }, { signal, onProgress: (event) => progress.push(event) });
 
@@ -40,7 +40,11 @@ test("maps Responses stream events and forwards working progress", async () => {
   assert.equal(fetchArgs.url, "https://example.test/v1/responses");
   assert.equal(fetchArgs.init.signal, signal);
   assert.equal(fetchArgs.init.headers.Authorization, "Bearer secret");
-  assert.equal(JSON.parse(fetchArgs.init.body).stream, true);
+  assert.deepEqual(JSON.parse(fetchArgs.init.body), {
+    model: "codex",
+    input: "explain: Explain this\n\nContext:\n[editor (src/app.ts)]\nconst answer = 42;",
+    stream: true,
+  });
 });
 
 test("rejects a failed Responses stream with provider details", async () => {
@@ -103,4 +107,34 @@ test("requests and maps structured edits for modification responses", async () =
     text: "Updated the function.",
     edits: [{ path: "src/app.ts", oldText: "old", newText: "new" }],
   });
+});
+
+test("rejects incomplete streams and parses an unterminated terminal event", async () => {
+  const encoder = new TextEncoder();
+  const incomplete = new FetchCodexTransport(async () => ({
+    ok: true, status: 200, statusText: "OK",
+    body: new ReadableStream({ start(controller) { controller.enqueue(encoder.encode("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}")); controller.close(); } }),
+    json: async () => ({}),
+  }));
+  await assert.rejects(incomplete.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {}), /before response\.completed/);
+
+  const complete = new FetchCodexTransport(async () => ({
+    ok: true, status: 200, statusText: "OK",
+    body: new ReadableStream({ start(controller) { controller.enqueue(encoder.encode("data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"done\"}}")); controller.close(); } }),
+    json: async () => ({}),
+  }));
+  const result = await complete.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {});
+  assert.equal(result.text, "done");
+});
+
+test("propagates non-OK HTTP statuses", async () => {
+  for (const status of [401, 429, 503]) {
+    const transport = new FetchCodexTransport(async () => ({
+      ok: false, status, statusText: "Failure", body: null, json: async () => ({}),
+    }));
+    await assert.rejects(transport.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {}), (error) => {
+      assert.equal(error.status, status);
+      return true;
+    });
+  }
 });

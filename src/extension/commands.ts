@@ -48,6 +48,12 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
       void vscode.window.showWarningMessage("Pairwave agent requests require an action and prompt.");
       return undefined;
     }
+    const confirmation = await vscode.window.showWarningMessage(
+      "This will send your request and workspace context to the configured coding-agent provider.",
+      { modal: true },
+      "Run agent",
+    );
+    if (confirmation !== "Run agent") return undefined;
     try {
       return await agent.run(request);
     } catch (error) {
@@ -62,8 +68,15 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
 
 function isAgentRequest(request: unknown): request is AgentRequest {
   if (!request || typeof request !== "object" || !("action" in request) || !("prompt" in request)) return false;
-  return ["read", "search", "explain", "suggest", "modify"].includes(request.action as string)
-    && typeof request.prompt === "string";
+  if (!["read", "search", "explain", "suggest", "modify"].includes(request.action as string)
+    || typeof request.prompt !== "string") return false;
+  if (!("context" in request) || request.context === undefined) return true;
+  return Array.isArray(request.context) && request.context.every((item) => {
+    if (!item || typeof item !== "object" || !("source" in item) || !("content" in item)) return false;
+    return typeof item.source === "string"
+      && typeof item.content === "string"
+      && (!("path" in item) || item.path === undefined || typeof item.path === "string");
+  });
 }
 
 function isRepositoryRequest(request: unknown): request is RepositoryRequest {

@@ -16,7 +16,10 @@ test("registers commands, forwards requests, refreshes the provider per workspac
         return disposable;
       },
     },
-    window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined },
+    window: {
+      showInformationMessage: async () => undefined,
+      showWarningMessage: async (_message, _options, action) => action,
+    },
   };
   const repositoryModule = require("../dist/context/repository");
   const originalCreateProvider = repositoryModule.createRepositoryContextProvider;
@@ -78,6 +81,12 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     });
     assert.equal(await commands.get("pairwave.retrieveRepositoryContext")(), undefined);
     assert.deepEqual(await commands.get("pairwave.runAgent")({ action: "explain", prompt: "Explain this" }), { text: "ok" });
+    assert.deepEqual(agentCalls, [{ action: "explain", prompt: "Explain this" }]);
+    assert.equal(await commands.get("pairwave.runAgent")({
+      action: "explain",
+      prompt: "Explain this",
+      context: [{ source: "editor", content: 42 }],
+    }), undefined);
     assert.deepEqual(agentCalls, [{ action: "explain", prompt: "Explain this" }]);
     assert.deepEqual(providers.map(({ root }) => root), ["/workspace-a", "/workspace-b"]);
 

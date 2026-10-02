@@ -13,6 +13,17 @@ function createAgent({ key = "test-key", send = async () => ({ text: "done" }) }
   return { agent, calls };
 }
 
+test("uses a documented Responses model by default", async () => {
+  let model;
+  const agent = new CodexAgent({
+    configuration: {},
+    secrets: { get: async () => "test-key" },
+    transport: { send: async (request) => { model = request.model; return { text: "done" }; } },
+  });
+  await agent.run({ action: "read", prompt: "Read the file" });
+  assert.equal(model, "gpt-4.1");
+});
+
 test("invokes Codex through the provider-neutral request and result contract", async () => {
   const { agent, calls } = createAgent({ send: async (request) => ({ text: `${request.action}: ${request.input}`, edits: [{ path: "src/app.ts", newText: "updated" }] }) });
   const result = await agent.run({ action: "explain", prompt: "What does this do?", context: [{ source: "editor", path: "src/app.ts", content: "const answer = 42;" }] });

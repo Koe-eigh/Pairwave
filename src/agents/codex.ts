@@ -49,7 +49,7 @@ export interface CodexAgentOptions {
 }
 
 const DEFAULT_CONFIGURATION: CodexConfiguration = {
-  model: "codex",
+  model: "gpt-4.1",
   endpoint: "https://api.openai.com/v1/responses",
   credentialKey: "pairwave.codex.apiKey",
 };

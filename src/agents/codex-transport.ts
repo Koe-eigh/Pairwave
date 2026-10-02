@@ -73,10 +73,10 @@ const EDIT_RESPONSE_FORMAT = {
           type: "object",
           properties: {
             path: { type: "string" },
-            oldText: { type: "string" },
+            oldText: { type: ["string", "null"] },
             newText: { type: "string" },
           },
-          required: ["path", "newText"],
+          required: ["path", "oldText", "newText"],
           additionalProperties: false,
         },
       },
@@ -92,31 +92,37 @@ async function readEventStream(body: ReadableStream<Uint8Array>, action: CodexRe
   let buffer = "";
   let text = "";
   let finalResponse: unknown;
+  let completed = false;
+
+  const processLine = (line: string): void => {
+    if (!line.startsWith("data:")) return;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    const event = JSON.parse(data) as { type?: string; delta?: string; response?: unknown; error?: unknown };
+    if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+      text += event.delta;
+      onProgress?.({ phase: "working", message: "Codex is generating a response." });
+    } else if (event.type === "response.completed") {
+      finalResponse = event.response;
+      completed = true;
+    } else if (event.type === "response.failed") {
+      throw providerStreamError(event.response ?? event.error);
+    } else if (event.type === "error") {
+      throw providerStreamError(event.error);
+    }
+  };
 
   while (true) {
     const chunk = await reader.read();
     buffer += decoder.decode(chunk.value, { stream: !chunk.done });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === "[DONE]") continue;
-      const event = JSON.parse(data) as { type?: string; delta?: string; response?: unknown; error?: unknown };
-      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
-        text += event.delta;
-        onProgress?.({ phase: "working", message: "Codex is generating a response." });
-      } else if (event.type === "response.completed") {
-        finalResponse = event.response;
-      } else if (event.type === "response.failed") {
-        throw providerStreamError(event.response ?? event.error);
-      } else if (event.type === "error") {
-        throw providerStreamError(event.error);
-      }
-    }
+    for (const line of lines) processLine(line);
     if (chunk.done) break;
   }
 
+  if (buffer.trim()) processLine(buffer);
+  if (!completed) throw new Error("Codex stream ended before response.completed.");
   const mapped = finalResponse ? mapResponse(finalResponse, action) : undefined;
   return mapped ?? { text, edits: [] };
 }
@@ -164,7 +170,13 @@ function extractOutputText(output: unknown): string {
 
 function extractEdits(output: unknown): readonly AgentEdit[] {
   if (!Array.isArray(output)) return [];
-  return output.filter((item): item is AgentEdit => item !== null && typeof item === "object"
-    && "path" in item && typeof item.path === "string"
-    && "newText" in item && typeof item.newText === "string");
+  return output.flatMap((item) => {
+    if (!item || typeof item !== "object" || !("path" in item) || typeof item.path !== "string"
+      || !("newText" in item) || typeof item.newText !== "string") return [];
+    return [{
+      path: item.path,
+      newText: item.newText,
+      ...(typeof item.oldText === "string" ? { oldText: item.oldText } : {}),
+    }];
+  });
 }
