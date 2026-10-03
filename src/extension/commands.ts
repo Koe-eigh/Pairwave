@@ -1,11 +1,12 @@
 import * as vscode from "vscode";
-import { CodingAgentError, type AgentRequest, type CodingAgent } from "../agents";
+import { CodingAgentError, type AgentProgress, type AgentRequest, type AgentResult, type CodingAgent } from "../agents";
 import { collectEditorContext } from "../context";
 import { createRepositoryContextProvider, type RepositoryProvider, type RepositoryRequest } from "../context/repository";
 import { readVscodeEditorSnapshot, readVscodeWorkspacePath, readVscodeWorkspaceRoot } from "../context/vscode";
 
 /** Register Pairwave's extension-host commands. */
 export function registerCommands(context: vscode.ExtensionContext, agent: CodingAgent): void {
+  const output = vscode.window.createOutputChannel("Pairwave");
   let repository: RepositoryProvider | undefined;
   let repositoryRoot: string | undefined;
   const getRepository = (requestedPath?: string): RepositoryProvider | undefined => {
@@ -66,7 +67,16 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
     );
     if (confirmation !== "Run agent") return undefined;
     try {
-      return await agent.run(agentRequest);
+      const currentContext = await collectAgentContext(getRepository());
+      const requestWithContext: AgentRequest = {
+        ...agentRequest,
+        context: [...(agentRequest.context ?? []), ...currentContext],
+      };
+      const result = await agent.run(requestWithContext, {
+        onProgress: (progress) => presentAgentProgress(output, progress),
+      });
+      presentAgentResult(output, result);
+      return result;
     } catch (error) {
       const message = error instanceof CodingAgentError ? error.message : "The coding-agent request failed.";
       void vscode.window.showErrorMessage(message);
@@ -74,7 +84,36 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
     }
   });
 
-  context.subscriptions.push(startCommand, retrieveRepositoryContext, runAgent);
+  context.subscriptions.push(output, startCommand, retrieveRepositoryContext, runAgent);
+}
+
+async function collectAgentContext(repository: RepositoryProvider | undefined): Promise<NonNullable<AgentRequest["context"]>> {
+  const snapshot = await readVscodeEditorSnapshot();
+  const repositoryContext = await repository?.collectInitial({ maxChars: 12_000 });
+  const editorContext = collectEditorContext(snapshot, { repositoryItems: repositoryContext?.items });
+  const repositoryKinds = new Set(["git-changes", "git-diff", "repository-file", "repository-symbol", "repository-reference", "repository-dependency"]);
+  return editorContext.items.flatMap((item) => {
+    if (typeof item.content !== "string") return [];
+    return [{
+      source: repositoryKinds.has(item.kind) ? `repository:${item.kind}` : `editor:${item.kind}`,
+      ...(item.path ? { path: item.path } : {}),
+      content: item.content,
+    }];
+  });
+}
+
+function presentAgentProgress(output: vscode.OutputChannel, progress: AgentProgress): void {
+  output.appendLine(`[${progress.phase}] ${progress.message}`);
+  output.show(true);
+}
+
+function presentAgentResult(output: vscode.OutputChannel, result: AgentResult): void {
+  output.appendLine(`\n${result.text}`);
+  if (result.edits?.length) {
+    output.appendLine("\nProposed edits:");
+    for (const edit of result.edits) output.appendLine(`- ${edit.path}`);
+  }
+  output.show(true);
 }
 
 function isAgentRequest(request: unknown): request is AgentRequest {

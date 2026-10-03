@@ -7,6 +7,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
   const registrations = [];
   const providers = [];
   const errors = [];
+  const outputLines = [];
   let workspaceRoot = "/workspace-a";
   const vscodeMock = {
     commands: {
@@ -18,6 +19,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       },
     },
     window: {
+      createOutputChannel: () => ({ appendLine: (line) => outputLines.push(line), show: () => {}, dispose: () => {} }),
       showInformationMessage: async () => undefined,
       showWarningMessage: async (_message, _options, action) => action,
       showErrorMessage: async (message) => { errors.push(message); },
@@ -58,11 +60,11 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     const { registerCommands } = require("../dist/extension/commands");
     const context = { subscriptions: [] };
     const agentCalls = [];
-    const agent = { run: async (request) => { agentCalls.push(request); return { text: "ok" }; } };
+    const agent = { run: async (request, options) => { agentCalls.push(request); options.onProgress({ phase: "working", message: "working" }); return { text: "ok", edits: [], provider: "test" }; } };
     registerCommands(context, agent);
 
     assert.deepEqual([...commands.keys()], ["pairwave.start", "pairwave.retrieveRepositoryContext", "pairwave.runAgent"]);
-    assert.equal(context.subscriptions.length, 3);
+    assert.equal(context.subscriptions.length, 4);
 
     const firstStart = await commands.get("pairwave.start")();
     const firstRequest = { kind: "file", path: "src/app.ts" };
@@ -84,12 +86,12 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       request: { kind: "file", path: "src/app.ts" },
     });
     assert.equal(await commands.get("pairwave.retrieveRepositoryContext")(), undefined);
-    assert.deepEqual(await commands.get("pairwave.runAgent")({ action: "explain", prompt: "Explain this" }), { text: "ok" });
-    assert.deepEqual(agentCalls, [{ action: "explain", prompt: "Explain this" }]);
-    assert.deepEqual(await commands.get("pairwave.runAgent")(), { text: "ok" });
+    assert.deepEqual(await commands.get("pairwave.runAgent")({ action: "explain", prompt: "Explain this" }), { text: "ok", edits: [], provider: "test" });
+    assert.deepEqual(agentCalls, [{ action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] }]);
+    assert.deepEqual(await commands.get("pairwave.runAgent")(), { text: "ok", edits: [], provider: "test" });
     assert.deepEqual(agentCalls, [
-      { action: "explain", prompt: "Explain this" },
-      { action: "explain", prompt: "Explain this" },
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
     ]);
     assert.equal(await commands.get("pairwave.runAgent")({
       action: "explain",
@@ -97,9 +99,10 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       context: [{ source: "editor", content: 42 }],
     }), undefined);
     assert.deepEqual(agentCalls, [
-      { action: "explain", prompt: "Explain this" },
-      { action: "explain", prompt: "Explain this" },
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
     ]);
+    assert.equal(outputLines.some((line) => line.includes("ok")), true);
     assert.deepEqual(providers.map(({ root }) => root), ["/workspace-a", "/workspace-b"]);
 
     for (const subscription of context.subscriptions) subscription.dispose();
@@ -117,7 +120,9 @@ test("displays a coding-agent error and returns no result", async () => {
   const errors = [];
   const vscodeMock = {
     commands: { registerCommand: (id, handler) => { commands.set(id, handler); return { dispose() {} }; } },
+    workspace: { textDocuments: [], workspaceFolders: [] },
     window: {
+      createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, dispose: () => {} }),
       showWarningMessage: async (_message, _options, action) => action,
       showErrorMessage: async (message) => { errors.push(message); },
     },

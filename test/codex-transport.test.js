@@ -166,6 +166,26 @@ test("preserves string streamed failure status for downstream classification", a
   });
 });
 
+test("preserves top-level streamed error details", async () => {
+  const encoder = new TextEncoder();
+  const transport = new FetchCodexTransport(async () => ({
+    ok: true, status: 200, statusText: "OK",
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: {\"type\":\"error\",\"error\":{\"status\":\"429\",\"code\":\"rate_limit\",\"message\":\"Too many requests\"}}\n\n"));
+        controller.close();
+      },
+    }),
+    json: async () => ({}),
+  }));
+  await assert.rejects(transport.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {}), (error) => {
+    assert.equal(error.status, 429);
+    assert.match(error.message, /Too many requests/);
+    assert.match(error.message, /rate_limit/);
+    return true;
+  });
+});
+
 test("buffers SSE events split across network chunks", async () => {
   const encoder = new TextEncoder();
   const event = "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"split\"}}\n\n";
