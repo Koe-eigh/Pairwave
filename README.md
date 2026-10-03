@@ -49,3 +49,5 @@ npm run lint
 `npm test` builds the extension and runs the editor- and repository-context unit tests.
 
 Use the `Run Pairwave Extension` launch configuration in VS Code to open an Extension Development Host. Run `Pairwave: Start` from the Command Palette to verify activation.
+
+Before running the coding agent, use `Pairwave: Configure Codex API Key` from the Command Palette. The key is entered through a password field and stored in VS Code SecretStorage; it is never written to settings or project files.

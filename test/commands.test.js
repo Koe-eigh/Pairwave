@@ -6,6 +6,8 @@ test("registers commands, forwards requests, refreshes the provider per workspac
   const commands = new Map();
   const registrations = [];
   const providers = [];
+  const errors = [];
+  const outputLines = [];
   let workspaceRoot = "/workspace-a";
   const vscodeMock = {
     commands: {
@@ -16,7 +18,14 @@ test("registers commands, forwards requests, refreshes the provider per workspac
         return disposable;
       },
     },
-    window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined },
+    window: {
+      createOutputChannel: () => ({ appendLine: (line) => outputLines.push(line), show: () => {}, dispose: () => {} }),
+      showInformationMessage: async () => undefined,
+      showWarningMessage: async (_message, _options, action) => action,
+      showErrorMessage: async (message) => { errors.push(message); },
+      showQuickPick: async () => "explain",
+      showInputBox: async () => "Explain this",
+    },
   };
   const repositoryModule = require("../dist/context/repository");
   const originalCreateProvider = repositoryModule.createRepositoryContextProvider;
@@ -50,10 +59,12 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     delete require.cache[vscodeAdapterPath];
     const { registerCommands } = require("../dist/extension/commands");
     const context = { subscriptions: [] };
-    registerCommands(context);
+    const agentCalls = [];
+    const agent = { run: async (request, options) => { agentCalls.push(request); options.onProgress({ phase: "working", message: "working" }); return { text: "ok", edits: [], provider: "test" }; } };
+    registerCommands(context, agent);
 
-    assert.deepEqual([...commands.keys()], ["pairwave.start", "pairwave.retrieveRepositoryContext"]);
-    assert.equal(context.subscriptions.length, 2);
+    assert.deepEqual([...commands.keys()], ["pairwave.start", "pairwave.retrieveRepositoryContext", "pairwave.configureApiKey", "pairwave.runAgent"]);
+    assert.equal(context.subscriptions.length, 5);
 
     const firstStart = await commands.get("pairwave.start")();
     const firstRequest = { kind: "file", path: "src/app.ts" };
@@ -75,6 +86,23 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       request: { kind: "file", path: "src/app.ts" },
     });
     assert.equal(await commands.get("pairwave.retrieveRepositoryContext")(), undefined);
+    assert.deepEqual(await commands.get("pairwave.runAgent")({ action: "explain", prompt: "Explain this" }), { text: "ok", edits: [], provider: "test" });
+    assert.deepEqual(agentCalls, [{ action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] }]);
+    assert.deepEqual(await commands.get("pairwave.runAgent")(), { text: "ok", edits: [], provider: "test" });
+    assert.deepEqual(agentCalls, [
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
+    ]);
+    assert.equal(await commands.get("pairwave.runAgent")({
+      action: "explain",
+      prompt: "Explain this",
+      context: [{ source: "editor", content: 42 }],
+    }), undefined);
+    assert.deepEqual(agentCalls, [
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
+      { action: "explain", prompt: "Explain this", context: [{ source: "repository:git-changes", content: "/workspace-b" }] },
+    ]);
+    assert.equal(outputLines.some((line) => line.includes("ok")), true);
     assert.deepEqual(providers.map(({ root }) => root), ["/workspace-a", "/workspace-b"]);
 
     for (const subscription of context.subscriptions) subscription.dispose();
@@ -84,6 +112,72 @@ test("registers commands, forwards requests, refreshes the provider per workspac
     Module._load = originalLoad;
     delete require.cache[require.resolve("../dist/extension/commands")];
     delete require.cache[vscodeAdapterPath];
+  }
+});
+
+test("displays a coding-agent error and returns no result", async () => {
+  const commands = new Map();
+  const errors = [];
+  const vscodeMock = {
+    commands: { registerCommand: (id, handler) => { commands.set(id, handler); return { dispose() {} }; } },
+    workspace: { textDocuments: [], workspaceFolders: [] },
+    window: {
+      createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, dispose: () => {} }),
+      showWarningMessage: async (_message, _options, action) => action,
+      showErrorMessage: async (message) => { errors.push(message); },
+    },
+  };
+  const originalLoad = Module._load;
+  Module._load = function(request, parent, isMain) {
+    if (request === "vscode") return vscodeMock;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  try {
+    delete require.cache[require.resolve("../dist/extension/commands")];
+    const { registerCommands } = require("../dist/extension/commands");
+    const { CodingAgentError } = require("../dist/agents");
+    registerCommands({ subscriptions: [] }, { run: async () => { throw new CodingAgentError("Credential rejected.", "authentication"); } });
+    assert.equal(await commands.get("pairwave.runAgent")({ action: "read", prompt: "Read this" }), undefined);
+    assert.deepEqual(errors, ["Credential rejected."]);
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[require.resolve("../dist/extension/commands")];
+  }
+});
+
+test("stores a configured Codex API key in SecretStorage", async () => {
+  const commands = new Map();
+  const stored = [];
+  const messages = [];
+  const vscodeMock = {
+    commands: { registerCommand: (id, handler) => { commands.set(id, handler); return { dispose() {} }; } },
+    window: {
+      createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
+      showInputBox: async () => "  sk-test  ",
+      showInformationMessage: async (message) => { messages.push(message); },
+      showWarningMessage: async () => undefined,
+    },
+  };
+  const originalLoad = Module._load;
+  Module._load = function(request, parent, isMain) {
+    if (request === "vscode") return vscodeMock;
+    return originalLoad.call(this, request, parent, isMain);
+  };
+
+  try {
+    delete require.cache[require.resolve("../dist/extension/commands")];
+    const { registerCommands } = require("../dist/extension/commands");
+    registerCommands({
+      subscriptions: [],
+      secrets: { store: async (key, value) => { stored.push([key, value]); } },
+    }, { run: async () => ({ text: "ok", edits: [], provider: "test" }) });
+    assert.equal(await commands.get("pairwave.configureApiKey")(), true);
+    assert.deepEqual(stored, [["pairwave.codex.apiKey", "sk-test"]]);
+    assert.deepEqual(messages, ["Pairwave Codex API key saved securely."]);
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[require.resolve("../dist/extension/commands")];
   }
 });
 
