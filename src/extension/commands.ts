@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { CODEX_CREDENTIAL_KEY } from "../agents/codex";
 import { CodingAgentError, type AgentProgress, type AgentRequest, type AgentResult, type CodingAgent } from "../agents";
 import { collectEditorContext } from "../context";
 import { createRepositoryContextProvider, type RepositoryProvider, type RepositoryRequest } from "../context/repository";
@@ -44,6 +45,23 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
     },
   );
 
+  const configureApiKey = vscode.commands.registerCommand("pairwave.configureApiKey", async () => {
+    const apiKey = await vscode.window.showInputBox({
+      prompt: "Enter your Codex API key",
+      password: true,
+      ignoreFocusOut: true,
+      placeHolder: "sk-...",
+    });
+    if (apiKey === undefined) return undefined;
+    if (apiKey.trim().length === 0) {
+      void vscode.window.showWarningMessage("Pairwave API key cannot be empty.");
+      return undefined;
+    }
+    await context.secrets.store(CODEX_CREDENTIAL_KEY, apiKey.trim());
+    void vscode.window.showInformationMessage("Pairwave Codex API key saved securely.");
+    return true;
+  });
+
   const runAgent = vscode.commands.registerCommand("pairwave.runAgent", async (request: unknown) => {
     let agentRequest: AgentRequest;
     if (isAgentRequest(request)) {
@@ -84,7 +102,7 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
     }
   });
 
-  context.subscriptions.push(output, startCommand, retrieveRepositoryContext, runAgent);
+  context.subscriptions.push(output, startCommand, retrieveRepositoryContext, configureApiKey, runAgent);
 }
 
 async function collectAgentContext(repository: RepositoryProvider | undefined): Promise<NonNullable<AgentRequest["context"]>> {

@@ -48,10 +48,12 @@ export interface CodexAgentOptions {
   readonly transport: CodexTransport;
 }
 
+export const CODEX_CREDENTIAL_KEY = "pairwave.codex.apiKey";
+
 const DEFAULT_CONFIGURATION: CodexConfiguration = {
   model: "gpt-4.1",
   endpoint: "https://api.openai.com/v1/responses",
-  credentialKey: "pairwave.codex.apiKey",
+  credentialKey: CODEX_CREDENTIAL_KEY,
 };
 
 export class CodexAgent implements CodingAgent {

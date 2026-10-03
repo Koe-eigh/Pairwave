@@ -13,7 +13,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:pairwave.start"
+    "onCommand:pairwave.start",
+    "onCommand:pairwave.configureApiKey",
+    "onCommand:pairwave.runAgent"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -25,6 +27,10 @@
       {
         "command": "pairwave.retrieveRepositoryContext",
         "title": "Pairwave: Retrieve Repository Context"
+      },
+      {
+        "command": "pairwave.configureApiKey",
+        "title": "Pairwave: Configure Codex API Key"
       },
       {
         "command": "pairwave.runAgent",
