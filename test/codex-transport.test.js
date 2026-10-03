@@ -109,6 +109,14 @@ test("requests and maps structured edits for modification responses", async () =
   });
 });
 
+test("rejects malformed modification output", async () => {
+  const transport = new FetchCodexTransport(async () => ({
+    ok: true, status: 200, statusText: "OK", body: null,
+    json: async () => ({ output_text: "not JSON" }),
+  }));
+  await assert.rejects(transport.send({ endpoint: "https://example.test", model: "codex", input: "Update", action: "modify", context: [], apiKey: "secret" }, {}), /malformed modification output/);
+});
+
 test("rejects incomplete streams and parses an unterminated terminal event", async () => {
   const encoder = new TextEncoder();
   const incomplete = new FetchCodexTransport(async () => ({
@@ -137,4 +145,42 @@ test("propagates non-OK HTTP statuses", async () => {
       return true;
     });
   }
+});
+
+test("preserves string streamed failure status for downstream classification", async () => {
+  const encoder = new TextEncoder();
+  const transport = new FetchCodexTransport(async () => ({
+    ok: true, status: 200, statusText: "OK",
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"500\",\"error\":{\"code\":\"server_error\",\"message\":\"Upstream failed\"}}}\n\n"));
+        controller.close();
+      },
+    }),
+    json: async () => ({}),
+  }));
+  await assert.rejects(transport.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {}), (error) => {
+    assert.equal(error.status, 500);
+    assert.match(error.message, /server_error/);
+    return true;
+  });
+});
+
+test("buffers SSE events split across network chunks", async () => {
+  const encoder = new TextEncoder();
+  const event = "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"split\"}}\n\n";
+  const split = Math.floor(event.length / 2);
+  const transport = new FetchCodexTransport(async () => ({
+    ok: true, status: 200, statusText: "OK",
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(event.slice(0, split)));
+        controller.enqueue(encoder.encode(event.slice(split)));
+        controller.close();
+      },
+    }),
+    json: async () => ({}),
+  }));
+  const result = await transport.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {});
+  assert.equal(result.text, "split");
 });

@@ -105,6 +105,23 @@ test("maps provider failures to actionable retry metadata", async () => {
   });
 });
 
+test("maps authentication and rate-limit provider failures", async () => {
+  for (const status of [401, 403]) {
+    const { agent } = createAgent({ send: async () => { const error = new Error("rejected"); error.status = status; throw error; } });
+    await assert.rejects(agent.run({ action: "read", prompt: "Read the file" }), (error) => {
+      assert.equal(error.code, "authentication");
+      assert.equal(error.retryable, false);
+      return true;
+    });
+  }
+  const { agent } = createAgent({ send: async () => { const error = new Error("busy"); error.status = 429; throw error; } });
+  await assert.rejects(agent.run({ action: "read", prompt: "Read the file" }), (error) => {
+    assert.equal(error.code, "rate-limit");
+    assert.equal(error.retryable, true);
+    return true;
+  });
+});
+
 test("rejects empty modification instructions", async () => {
   const { agent } = createAgent();
   await assert.rejects(agent.run({ action: "modify", prompt: "   " }), (error) => error.code === "request");

@@ -134,7 +134,9 @@ function providerStreamError(value: unknown): Error & { status?: number } {
     : {};
   const message = typeof providerError.message === "string" ? providerError.message : "Codex reported an error while streaming the response.";
   const error = new Error(`Codex stream failed: ${message}`) as Error & { status?: number };
-  if (typeof details.status === "number") error.status = details.status;
+  const status = typeof details.status === "number" ? details.status
+    : typeof details.status === "string" && /^\d+$/.test(details.status) ? Number(details.status) : undefined;
+  if (status !== undefined) error.status = status;
   if (typeof providerError.code === "string") error.message += ` (${providerError.code})`;
   return error;
 }
@@ -149,12 +151,16 @@ function mapResponse(value: unknown, action?: CodexRequest["action"]): CodexResp
 function mapEditEnvelope(text: string): CodexResponse {
   try {
     const value = JSON.parse(text) as { text?: unknown; edits?: unknown };
+    if (!value || typeof value !== "object" || typeof value.text !== "string" || !Array.isArray(value.edits)) {
+      throw new Error("Codex returned an invalid modification response envelope.");
+    }
     return {
-      text: typeof value.text === "string" ? value.text : text,
+      text: value.text,
       edits: extractEdits(value.edits),
     };
-  } catch {
-    return { text, edits: [] };
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Codex returned")) throw error;
+    throw new Error("Codex returned malformed modification output; expected a JSON { text, edits } response.");
   }
 }
 

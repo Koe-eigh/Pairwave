@@ -44,7 +44,18 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
   );
 
   const runAgent = vscode.commands.registerCommand("pairwave.runAgent", async (request: unknown) => {
-    if (!isAgentRequest(request)) {
+    let agentRequest: AgentRequest;
+    if (isAgentRequest(request)) {
+      agentRequest = request;
+    } else if (request === undefined) {
+      const action = await vscode.window.showQuickPick(
+        ["read", "search", "explain", "suggest", "modify"],
+        { placeHolder: "Choose an agent action" },
+      );
+      const prompt = action === undefined ? undefined : await vscode.window.showInputBox({ prompt: "What should Pairwave ask the coding agent?" });
+      if (action === undefined || prompt === undefined || prompt.trim().length === 0) return undefined;
+      agentRequest = { action: action as AgentRequest["action"], prompt };
+    } else {
       void vscode.window.showWarningMessage("Pairwave agent requests require an action and prompt.");
       return undefined;
     }
@@ -55,7 +66,7 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
     );
     if (confirmation !== "Run agent") return undefined;
     try {
-      return await agent.run(request);
+      return await agent.run(agentRequest);
     } catch (error) {
       const message = error instanceof CodingAgentError ? error.message : "The coding-agent request failed.";
       void vscode.window.showErrorMessage(message);
