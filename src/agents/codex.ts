@@ -66,8 +66,16 @@ export class CodexAgent implements CodingAgent {
     this.configuration = { ...DEFAULT_CONFIGURATION, ...options.configuration };
     this.secrets = options.secrets;
     this.transport = options.transport;
-    if (!this.configuration.endpoint) throw new CodingAgentError("Codex endpoint is not configured.", "configuration");
-    if (!this.configuration.model) throw new CodingAgentError("Codex model is not configured.", "configuration");
+    if (typeof this.configuration.model !== "string" || !this.configuration.model.trim()) {
+      throw new CodingAgentError("Set pairwave.codex.model to a non-empty model name.", "configuration");
+    }
+    try {
+      if (typeof this.configuration.endpoint !== "string") throw new Error();
+      const endpoint = new URL(this.configuration.endpoint);
+      if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash) throw new Error();
+    } catch {
+      throw new CodingAgentError("Set pairwave.codex.endpoint to an HTTPS URL without embedded credentials or a fragment.", "configuration");
+    }
   }
 
   public async run(request: AgentRequest, options: CodingAgentRunOptions = {}): Promise<AgentResult> {

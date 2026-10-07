@@ -19,6 +19,25 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Pairwave",
+      "properties": {
+        "pairwave.codex.model": {
+          "type": "string",
+          "default": "gpt-4.1",
+          "pattern": "\\S",
+          "scope": "application",
+          "description": "Model used for coding-agent requests."
+        },
+        "pairwave.codex.endpoint": {
+          "type": "string",
+          "default": "https://api.openai.com/v1/responses",
+          "pattern": "^https://",
+          "scope": "application",
+          "description": "HTTPS Responses-compatible endpoint receiving requests and the SecretStorage API key. Do not include credentials in this setting."
+        }
+      }
+    },
     "commands": [
       {
         "command": "pairwave.start",

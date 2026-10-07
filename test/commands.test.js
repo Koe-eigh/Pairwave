@@ -10,6 +10,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
   const outputLines = [];
   let workspaceRoot = "/workspace-a";
   const vscodeMock = {
+    ProgressLocation: { Notification: 15 },
     commands: {
       registerCommand: (id, handler) => {
         commands.set(id, handler);
@@ -19,6 +20,7 @@ test("registers commands, forwards requests, refreshes the provider per workspac
       },
     },
     window: {
+      withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),
       createOutputChannel: () => ({ appendLine: (line) => outputLines.push(line), show: () => {}, dispose: () => {} }),
       showInformationMessage: async () => undefined,
       showWarningMessage: async (_message, _options, action) => action,
@@ -119,9 +121,11 @@ test("displays a coding-agent error and returns no result", async () => {
   const commands = new Map();
   const errors = [];
   const vscodeMock = {
+    ProgressLocation: { Notification: 15 },
     commands: { registerCommand: (id, handler) => { commands.set(id, handler); return { dispose() {} }; } },
     workspace: { textDocuments: [], workspaceFolders: [] },
     window: {
+      withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),
       createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, dispose: () => {} }),
       showWarningMessage: async (_message, _options, action) => action,
       showErrorMessage: async (message) => { errors.push(message); },
@@ -151,8 +155,10 @@ test("stores a configured Codex API key in SecretStorage", async () => {
   const stored = [];
   const messages = [];
   const vscodeMock = {
+    ProgressLocation: { Notification: 15 },
     commands: { registerCommand: (id, handler) => { commands.set(id, handler); return { dispose() {} }; } },
     window: {
+      withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),
       createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
       showInputBox: async () => "  sk-test  ",
       showInformationMessage: async (message) => { messages.push(message); },
@@ -187,11 +193,13 @@ test("resolves a multi-root workspace from the requested folder or active editor
     { name: "folder-b", uri: { fsPath: "/workspace-b" } },
   ];
   const vscodeMock = {
+    ProgressLocation: { Notification: 15 },
     workspace: {
       workspaceFolders: folders,
       getWorkspaceFolder: (uri) => uri.fsPath.startsWith("/workspace-b/") ? folders[1] : folders[0],
     },
-    window: { activeTextEditor: { document: { uri: { fsPath: "/workspace-b/src/app.ts" } } } },
+    window: {
+      withProgress: async (_options, task) => task({ report() {} }, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }), activeTextEditor: { document: { uri: { fsPath: "/workspace-b/src/app.ts" } } } },
   };
   const originalLoad = Module._load;
   const vscodeAdapterPath = require.resolve("../dist/context/vscode");
@@ -211,3 +219,79 @@ test("resolves a multi-root workspace from the requested folder or active editor
     delete require.cache[vscodeAdapterPath];
   }
 });
+
+for (const outcome of ["cancel", "success", "failure", "already-cancelled"]) {
+  test(`command connects cancellation and disposes its listener on ${outcome}`, async () => {
+    const commands = new Map();
+    const errors = [];
+    const reports = [];
+    let cancel;
+    let disposed = false;
+    let receivedSignal;
+    const vscodeMock = {
+      ProgressLocation: { Notification: 15 },
+      commands: { registerCommand(id, handler) { commands.set(id, handler); return { dispose() {} }; } },
+      workspace: { textDocuments: [], workspaceFolders: [] },
+      window: {
+        createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
+        showWarningMessage: async () => "Run agent",
+        showErrorMessage: async (message) => errors.push(message),
+        withProgress: async (options, task) => {
+          assert.equal(options.cancellable, true);
+          assert.equal(options.location, 15);
+          return task({ report: (event) => reports.push(event.message) }, {
+            isCancellationRequested: outcome === "already-cancelled",
+            onCancellationRequested(listener) {
+              cancel = listener;
+              return { dispose() { disposed = true; } };
+            },
+          });
+        },
+      },
+    };
+    const originalLoad = Module._load;
+    const paths = ["../dist/extension/commands", "../dist/context/vscode"];
+    Module._load = function(request, parent, isMain) {
+      if (request === "vscode") return vscodeMock;
+      return originalLoad.call(this, request, parent, isMain);
+    };
+    try {
+      for (const path of paths) delete require.cache[require.resolve(path)];
+      const { CodingAgentError } = require("../dist/agents");
+      require("../dist/extension/commands").registerCommands({ subscriptions: [] }, {
+        run: async (_request, options) => {
+          receivedSignal = options.signal;
+          assert.equal(receivedSignal.aborted, false);
+          options.onProgress({ phase: "working", message: "Working" });
+          if (outcome === "cancel") {
+            return new Promise((_resolve, reject) => {
+              receivedSignal.addEventListener("abort", () => reject(new CodingAgentError("Cancelled", "cancelled")), { once: true });
+              cancel();
+            });
+          }
+          if (outcome === "failure") throw new CodingAgentError("Failed", "request");
+          return { text: "done", edits: [], provider: "test" };
+        },
+      });
+      const result = await commands.get("pairwave.runAgent")({ action: "read", prompt: "Read this" });
+      assert.equal(disposed, true);
+      if (outcome === "already-cancelled") {
+        assert.equal(receivedSignal, undefined);
+        assert.match(errors[0], /cancelled/);
+      } else {
+        assert.equal(receivedSignal.aborted, outcome === "cancel");
+        assert.deepEqual(reports, ["Working"]);
+      }
+      if (outcome === "success") {
+        assert.equal(result.text, "done");
+        assert.deepEqual(errors, []);
+      } else {
+        assert.equal(result, undefined);
+        assert.equal(errors.length, 1);
+      }
+    } finally {
+      Module._load = originalLoad;
+      for (const path of paths) delete require.cache[require.resolve(path)];
+    }
+  });
+}

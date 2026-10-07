@@ -85,16 +85,34 @@ export function registerCommands(context: vscode.ExtensionContext, agent: Coding
     );
     if (confirmation !== "Run agent") return undefined;
     try {
-      const currentContext = await collectAgentContext(getRepository());
-      const requestWithContext: AgentRequest = {
-        ...agentRequest,
-        context: [...(agentRequest.context ?? []), ...currentContext],
-      };
-      const result = await agent.run(requestWithContext, {
-        onProgress: (progress) => presentAgentProgress(output, progress),
+      return await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Pairwave coding agent",
+        cancellable: true,
+      }, async (progress, token) => {
+        const controller = new AbortController();
+        const cancellation = token.onCancellationRequested(() => controller.abort());
+        if (token.isCancellationRequested) controller.abort();
+        try {
+          const currentContext = await collectAgentContext(getRepository());
+          if (controller.signal.aborted) throw new CodingAgentError("The coding-agent request was cancelled.", "cancelled");
+          const requestWithContext: AgentRequest = {
+            ...agentRequest,
+            context: [...(agentRequest.context ?? []), ...currentContext],
+          };
+          const result = await agent.run(requestWithContext, {
+            signal: controller.signal,
+            onProgress: (event) => {
+              progress.report({ message: event.message });
+              presentAgentProgress(output, event);
+            },
+          });
+          presentAgentResult(output, result);
+          return result;
+        } finally {
+          cancellation.dispose();
+        }
       });
-      presentAgentResult(output, result);
-      return result;
     } catch (error) {
       const message = error instanceof CodingAgentError ? error.message : "The coding-agent request failed.";
       void vscode.window.showErrorMessage(message);
