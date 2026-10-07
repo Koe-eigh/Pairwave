@@ -1,10 +1,13 @@
 import * as vscode from "vscode";
+import { CODEX_CREDENTIAL_KEY } from "../agents/codex";
+import { CodingAgentError, type AgentProgress, type AgentRequest, type AgentResult, type CodingAgent } from "../agents";
 import { collectEditorContext } from "../context";
 import { createRepositoryContextProvider, type RepositoryProvider, type RepositoryRequest } from "../context/repository";
 import { readVscodeEditorSnapshot, readVscodeWorkspacePath, readVscodeWorkspaceRoot } from "../context/vscode";
 
 /** Register Pairwave's extension-host commands. */
-export function registerCommands(context: vscode.ExtensionContext): void {
+export function registerCommands(context: vscode.ExtensionContext, agent: CodingAgent): void {
+  const output = vscode.window.createOutputChannel("Pairwave");
   let repository: RepositoryProvider | undefined;
   let repositoryRoot: string | undefined;
   const getRepository = (requestedPath?: string): RepositoryProvider | undefined => {
@@ -42,7 +45,124 @@ export function registerCommands(context: vscode.ExtensionContext): void {
     },
   );
 
-  context.subscriptions.push(startCommand, retrieveRepositoryContext);
+  const configureApiKey = vscode.commands.registerCommand("pairwave.configureApiKey", async () => {
+    const apiKey = await vscode.window.showInputBox({
+      prompt: "Enter your Codex API key",
+      password: true,
+      ignoreFocusOut: true,
+      placeHolder: "sk-...",
+    });
+    if (apiKey === undefined) return undefined;
+    if (apiKey.trim().length === 0) {
+      void vscode.window.showWarningMessage("Pairwave API key cannot be empty.");
+      return undefined;
+    }
+    await context.secrets.store(CODEX_CREDENTIAL_KEY, apiKey.trim());
+    void vscode.window.showInformationMessage("Pairwave Codex API key saved securely.");
+    return true;
+  });
+
+  const runAgent = vscode.commands.registerCommand("pairwave.runAgent", async (request: unknown) => {
+    let agentRequest: AgentRequest;
+    if (isAgentRequest(request)) {
+      agentRequest = request;
+    } else if (request === undefined) {
+      const action = await vscode.window.showQuickPick(
+        ["read", "search", "explain", "suggest", "modify"],
+        { placeHolder: "Choose an agent action" },
+      );
+      const prompt = action === undefined ? undefined : await vscode.window.showInputBox({ prompt: "What should Pairwave ask the coding agent?" });
+      if (action === undefined || prompt === undefined || prompt.trim().length === 0) return undefined;
+      agentRequest = { action: action as AgentRequest["action"], prompt };
+    } else {
+      void vscode.window.showWarningMessage("Pairwave agent requests require an action and prompt.");
+      return undefined;
+    }
+    const confirmation = await vscode.window.showWarningMessage(
+      "This will send your request and workspace context to the configured coding-agent provider.",
+      { modal: true },
+      "Run agent",
+    );
+    if (confirmation !== "Run agent") return undefined;
+    try {
+      return await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Pairwave coding agent",
+        cancellable: true,
+      }, async (progress, token) => {
+        const controller = new AbortController();
+        const cancellation = token.onCancellationRequested(() => controller.abort());
+        if (token.isCancellationRequested) controller.abort();
+        try {
+          const currentContext = await collectAgentContext(getRepository());
+          if (controller.signal.aborted) throw new CodingAgentError("The coding-agent request was cancelled.", "cancelled");
+          const requestWithContext: AgentRequest = {
+            ...agentRequest,
+            context: [...(agentRequest.context ?? []), ...currentContext],
+          };
+          const result = await agent.run(requestWithContext, {
+            signal: controller.signal,
+            onProgress: (event) => {
+              progress.report({ message: event.message });
+              presentAgentProgress(output, event);
+            },
+          });
+          presentAgentResult(output, result);
+          return result;
+        } finally {
+          cancellation.dispose();
+        }
+      });
+    } catch (error) {
+      const message = error instanceof CodingAgentError ? error.message : "The coding-agent request failed.";
+      void vscode.window.showErrorMessage(message);
+      return undefined;
+    }
+  });
+
+  context.subscriptions.push(output, startCommand, retrieveRepositoryContext, configureApiKey, runAgent);
+}
+
+async function collectAgentContext(repository: RepositoryProvider | undefined): Promise<NonNullable<AgentRequest["context"]>> {
+  const snapshot = await readVscodeEditorSnapshot();
+  const repositoryContext = await repository?.collectInitial({ maxChars: 12_000 });
+  const editorContext = collectEditorContext(snapshot, { repositoryItems: repositoryContext?.items });
+  const repositoryKinds = new Set(["git-changes", "git-diff", "repository-file", "repository-symbol", "repository-reference", "repository-dependency"]);
+  return editorContext.items.flatMap((item) => {
+    if (typeof item.content !== "string") return [];
+    return [{
+      source: repositoryKinds.has(item.kind) ? `repository:${item.kind}` : `editor:${item.kind}`,
+      ...(item.path ? { path: item.path } : {}),
+      content: item.content,
+    }];
+  });
+}
+
+function presentAgentProgress(output: vscode.OutputChannel, progress: AgentProgress): void {
+  output.appendLine(`[${progress.phase}] ${progress.message}`);
+  output.show(true);
+}
+
+function presentAgentResult(output: vscode.OutputChannel, result: AgentResult): void {
+  output.appendLine(`\n${result.text}`);
+  if (result.edits?.length) {
+    output.appendLine("\nProposed edits:");
+    for (const edit of result.edits) output.appendLine(`- ${edit.path}`);
+  }
+  output.show(true);
+}
+
+function isAgentRequest(request: unknown): request is AgentRequest {
+  if (!request || typeof request !== "object" || !("action" in request) || !("prompt" in request)) return false;
+  if (!["read", "search", "explain", "suggest", "modify"].includes(request.action as string)
+    || typeof request.prompt !== "string") return false;
+  if (!("context" in request) || request.context === undefined) return true;
+  return Array.isArray(request.context) && request.context.every((item) => {
+    if (!item || typeof item !== "object" || !("source" in item) || !("content" in item)) return false;
+    return typeof item.source === "string"
+      && typeof item.content === "string"
+      && (!("path" in item) || item.path === undefined || typeof item.path === "string");
+  });
 }
 
 function isRepositoryRequest(request: unknown): request is RepositoryRequest {

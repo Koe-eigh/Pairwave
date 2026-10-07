@@ -49,3 +49,7 @@ npm run lint
 `npm test` builds the extension and runs the editor- and repository-context unit tests.
 
 Use the `Run Pairwave Extension` launch configuration in VS Code to open an Extension Development Host. Run `Pairwave: Start` from the Command Palette to verify activation.
+
+Before running the coding agent, use `Pairwave: Configure Codex API Key` from the Command Palette. The key is entered through a password field and stored in VS Code SecretStorage; it is never written to settings or project files.
+
+Set `pairwave.codex.model` and `pairwave.codex.endpoint` in User Settings to select a model and an HTTPS Responses-compatible endpoint. Defaults are `gpt-4.1` and `https://api.openai.com/v1/responses`. Changes apply to the next request. These settings are user-only; the endpoint receives the stored API key and must not contain embedded credentials. Use **Cancel** in the coding-agent progress notification to abort a running request.
