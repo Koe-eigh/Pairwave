@@ -108,7 +108,7 @@ async function readEventStream(body: ReadableStream<Uint8Array>, action: CodexRe
     } else if (event.type === "response.failed") {
       throw providerStreamError(event.response ?? event.error);
     } else if (event.type === "error") {
-      throw providerStreamError(event.error);
+      throw providerStreamError(event);
     }
   };
 
@@ -127,18 +127,21 @@ async function readEventStream(body: ReadableStream<Uint8Array>, action: CodexRe
   return mapped ?? { text, edits: [] };
 }
 
-function providerStreamError(value: unknown): Error & { status?: number } {
+function providerStreamError(value: unknown): Error & { status?: number; code?: string } {
   const details = value && typeof value === "object" ? value as { error?: unknown; status?: unknown; code?: unknown; message?: unknown } : {};
   const providerError: { code?: unknown; message?: unknown; status?: unknown } = details.error && typeof details.error === "object"
     ? details.error as { code?: unknown; message?: unknown; status?: unknown }
     : details;
   const message = typeof providerError.message === "string" ? providerError.message : "Codex reported an error while streaming the response.";
-  const error = new Error(`Codex stream failed: ${message}`) as Error & { status?: number };
+  const error = new Error(`Codex stream failed: ${message}`) as Error & { status?: number; code?: string };
   const rawStatus = providerError.status ?? details.status;
   const status = typeof rawStatus === "number" ? rawStatus
     : typeof rawStatus === "string" && /^\d+$/.test(rawStatus) ? Number(rawStatus) : undefined;
   if (status !== undefined) error.status = status;
-  if (typeof providerError.code === "string") error.message += ` (${providerError.code})`;
+  if (typeof providerError.code === "string") {
+    error.code = providerError.code;
+    error.message += ` (${providerError.code})`;
+  }
   return error;
 }
 

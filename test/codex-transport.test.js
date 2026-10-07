@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { FetchCodexTransport } = require("../dist/agents/codex-transport");
+const { CodexAgent } = require("../dist/agents/codex");
 
 test("maps Responses stream events and forwards working progress", async () => {
   let fetchArgs;
@@ -166,7 +167,7 @@ test("preserves string streamed failure status for downstream classification", a
   });
 });
 
-test("preserves top-level streamed error details", async () => {
+test("preserves nested streamed error details", async () => {
   const encoder = new TextEncoder();
   const transport = new FetchCodexTransport(async () => ({
     ok: true, status: 200, statusText: "OK",
@@ -204,3 +205,59 @@ test("buffers SSE events split across network chunks", async () => {
   const result = await transport.send({ endpoint: "https://example.test", model: "codex", input: "x", action: "read", context: [], apiKey: "secret" }, {});
   assert.equal(result.text, "split");
 });
+
+for (const { name, event, code, retryable } of [
+  {
+    name: "top-level error fields",
+    event: { type: "error", status: 429, code: "rate_limit", message: "Too many requests" },
+    code: "rate-limit", retryable: true,
+  },
+  {
+    name: "failed response server error",
+    event: { type: "response.failed", response: { status: "failed", error: { code: "server_error", message: "Upstream failed" } } },
+    code: "unavailable", retryable: true,
+  },
+  {
+    name: "rate limit without HTTP status",
+    event: { type: "error", code: "rate_limit_exceeded", message: "Too many requests" },
+    code: "rate-limit", retryable: true,
+  },
+  {
+    name: "unknown provider code",
+    event: { type: "response.failed", response: { status: "failed", error: { code: "unknown_error", message: "Unknown failure" } } },
+    code: "request", retryable: false,
+  },
+  {
+    name: "explicit HTTP status takes precedence",
+    event: { type: "error", status: 401, code: "server_error", message: "Credential rejected" },
+    code: "authentication", retryable: false,
+  },
+]) {
+  test(`preserves details and classifies ${name} through the agent`, async () => {
+    const transport = new FetchCodexTransport(async () => ({
+      ok: true, status: 200, statusText: "OK",
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+          controller.close();
+        },
+      }),
+      json: async () => ({}),
+    }));
+    const details = event.response?.error ?? event;
+    await assert.rejects(transport.send({ endpoint: "https://example.test", model: "test", input: "x", action: "read", context: [], apiKey: "test-key" }, {}), (error) => {
+      assert.equal(error.code, details.code);
+      assert.ok(error.message.includes(details.message));
+      assert.equal(error.status, event.status);
+      return true;
+    });
+    const agent = new CodexAgent({ configuration: {}, secrets: { get: async () => "test-key" }, transport });
+    const progress = [];
+    await assert.rejects(agent.run({ action: "read", prompt: "Read this" }, { onProgress: (event) => progress.push(event.phase) }), (error) => {
+      assert.equal(error.code, code);
+      assert.equal(error.retryable, retryable);
+      return true;
+    });
+    assert.deepEqual(progress, ["queued"]);
+  });
+}

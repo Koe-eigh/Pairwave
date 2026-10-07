@@ -106,9 +106,14 @@ export function toCodingAgentError(error: unknown): CodingAgentError {
   }
   const message = error instanceof Error ? error.message : "The coding-agent request failed.";
   const status = typeof error === "object" && error !== null && "status" in error ? error.status : undefined;
+  const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
   if (status === 401 || status === 403) return new CodingAgentError("Codex rejected the stored credential. Update it and try again.", "authentication");
   if (status === 429) return new CodingAgentError("Codex is rate-limiting requests. Try again shortly.", "rate-limit", true);
   if (typeof status === "number" && status >= 500) return new CodingAgentError("Codex is temporarily unavailable. Try again shortly.", "unavailable", true);
+  if (status === undefined) {
+    if (code === "server_error") return new CodingAgentError("Codex is temporarily unavailable. Try again shortly.", "unavailable", true);
+    if (code === "rate_limit_exceeded" || code === "rate_limit") return new CodingAgentError("Codex is rate-limiting requests. Try again shortly.", "rate-limit", true);
+  }
   if (/abort|cancel/i.test(message)) return new CodingAgentError("The coding-agent request was cancelled.", "cancelled");
   return new CodingAgentError(`Codex request failed: ${message}`, "request");
 }
